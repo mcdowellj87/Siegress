@@ -1,0 +1,12 @@
+{
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build && node scripts/prepare-dist.mjs"
+  },
+  "dependencies": {
+    "vite": "latest",
+    "@openai/sites-vite-plugin": "latest"
+  },
+  "devDependencies": {},
+  "type": "module"
+}

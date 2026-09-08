@@ -1,0 +1,25 @@
+# Dependencies and generated output
+node_modules/
+dist/
+
+# OS and editor clutter
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Runtime/cache artifacts
+__pycache__/
+*.py[cod]
+.cache/
+.vite/
+
+# Local design/source exports and backups
+*.xcf
+*.backup-*
+*.bak
+*.tmp
+# Keep large/private raw assets out of version control.
+assets/*
+*.glb
+
