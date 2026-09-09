@@ -1524,7 +1524,8 @@
       TREE: rgb('#8b5a2b'),
       PLAYER: rgb('#0000ff'),
       BORDER: rgb('#ffff00'),
-      FUSION_REACTOR_SPAWN: rgb('#FF0000')
+      FUSION_REACTOR_SPAWN: rgb('#FF0000'),
+      OLD_ROOT_SPAWN: rgb('#00fffd')
     };
 
     function rgb(hex) {
@@ -1545,7 +1546,8 @@
     function isSpecial(r, g, b) {
       return near([r, g, b], COLORS.TREE) ||
         near([r, g, b], COLORS.PLAYER) ||
-        near([r, g, b], COLORS.FUSION_REACTOR_SPAWN);
+        near([r, g, b], COLORS.FUSION_REACTOR_SPAWN) ||
+        isOldRootSpawnPixel(r, g, b, 255);
     }
     function isTreePixel(r, g, b, a) {
       if (a < 16) return false;
@@ -1559,6 +1561,10 @@
       return r === COLORS.FUSION_REACTOR_SPAWN[0] &&
         g === COLORS.FUSION_REACTOR_SPAWN[1] &&
         b === COLORS.FUSION_REACTOR_SPAWN[2];
+    }
+    function isOldRootSpawnPixel(r, g, b, a) {
+      if (a < 16) return false;
+      return r <= 120 && g >= 140 && b >= 140 && g >= r + 45 && b >= r + 45;
     }
 
     /* =========================
@@ -3110,7 +3116,14 @@ const h = new Float32Array(mapW * mapH);
     const OLD_ROOT_SITE_X = 770;
     const OLD_ROOT_SITE_Z = 790;
     const OLD_ROOT_SITE_FACADE_Z = -104;
+    const OLD_ROOT_WALL_SAMPLE_STEP = 2;
+    const OLD_ROOT_WALL_INLIER_DIST = 4.75;
+    const OLD_ROOT_WALL_MIN_PIXELS = 80;
+    const OLD_ROOT_WALL_MIN_LENGTH = 48;
+    const OLD_ROOT_SITE_OFFSET_X = -14;
+    const OLD_ROOT_SITE_OFFSET_Z = -14;
     const TEMP_SPAWN_ON_OLD_ROOT_ISLAND = true;
+    let oldRootSiteReserve = { x: OLD_ROOT_SITE_X, z: OLD_ROOT_SITE_Z, r: 180 };
 
     async function makeOldRootSiteTexture() {
       const img = new Image();
@@ -3162,7 +3175,137 @@ const h = new Float32Array(mapW * mapH);
       });
     }
 
-    async function buildOldRootSite() {
+    function isOldRootWallPixel(r, g, b, a) {
+      if (a < 16) return false;
+      return r >= 180 && g <= 80 && b >= 140;
+    }
+
+    function mapPixelToWorld2(x, y) {
+      return new THREE.Vector2(x * cell - halfW + cell * 0.5, y * cell - halfH + cell * 0.5);
+    }
+
+    function collectOldRootWallPointsFromBitmap(data) {
+      const points = [];
+      for (let y = 0; y < mapH; y += OLD_ROOT_WALL_SAMPLE_STEP) {
+        for (let x = 0; x < mapW; x += OLD_ROOT_WALL_SAMPLE_STEP) {
+          const p = idx(x, y) * 4;
+          if (!isOldRootWallPixel(data[p], data[p + 1], data[p + 2], data[p + 3])) continue;
+          const world = mapPixelToWorld2(x, y);
+          points.push({ x: world.x, z: world.y });
+        }
+      }
+      return points;
+    }
+
+    function fitOldRootWallSegments(points) {
+      const segments = [];
+      let remaining = points.slice();
+      let seed = 0x51e67755;
+      const rand = () => {
+        seed = (seed + 0x6D2B79F5) >>> 0;
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t ^= t + Math.imul(t ^ (t >>> 7), 61 | t);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+
+      for (let pass = 0; pass < 3 && remaining.length >= OLD_ROOT_WALL_MIN_PIXELS; pass++) {
+        let best = null;
+        const iterations = Math.min(1200, Math.max(260, remaining.length * 2));
+
+        for (let n = 0; n < iterations; n++) {
+          const a = remaining[(rand() * remaining.length) | 0];
+          const b = remaining[(rand() * remaining.length) | 0];
+          if (!a || !b || a === b) continue;
+
+          const dx = b.x - a.x;
+          const dz = b.z - a.z;
+          const len = Math.hypot(dx, dz);
+          if (len < OLD_ROOT_WALL_MIN_LENGTH) continue;
+
+          const ux = dx / len;
+          const uz = dz / len;
+          const inliers = [];
+          let minT = Infinity;
+          let maxT = -Infinity;
+
+          for (let i = 0; i < remaining.length; i++) {
+            const p = remaining[i];
+            const rx = p.x - a.x;
+            const rz = p.z - a.z;
+            const dist = Math.abs(rx * uz - rz * ux);
+            if (dist > OLD_ROOT_WALL_INLIER_DIST) continue;
+            const t = rx * ux + rz * uz;
+            inliers.push(i);
+            minT = Math.min(minT, t);
+            maxT = Math.max(maxT, t);
+          }
+
+          const span = maxT - minT;
+          if (inliers.length < OLD_ROOT_WALL_MIN_PIXELS || span < OLD_ROOT_WALL_MIN_LENGTH) continue;
+          const score = inliers.length * span;
+          if (!best || score > best.score) best = { score, a, ux, uz, inliers, minT, maxT, span };
+        }
+
+        if (!best) break;
+
+        const p1 = new THREE.Vector2(best.a.x + best.ux * best.minT, best.a.z + best.uz * best.minT);
+        const p2 = new THREE.Vector2(best.a.x + best.ux * best.maxT, best.a.z + best.uz * best.maxT);
+        segments.push({
+          a: p1,
+          b: p2,
+          center: p1.clone().add(p2).multiplyScalar(0.5),
+          length: best.span,
+          yaw: Math.atan2(-(p2.y - p1.y), p2.x - p1.x)
+        });
+
+        const inlierSet = new Set(best.inliers);
+        remaining = remaining.filter((_, i) => !inlierSet.has(i));
+      }
+
+      return segments;
+    }
+
+    function findOldRootWallLayout(data) {
+      if (!data) return null;
+      const points = collectOldRootWallPointsFromBitmap(data);
+      if (points.length < OLD_ROOT_WALL_MIN_PIXELS) return null;
+
+      const segments = fitOldRootWallSegments(points);
+      if (segments.length < 3) return null;
+
+      const centroid = points.reduce((acc, p) => {
+        acc.x += p.x;
+        acc.y += p.z;
+        return acc;
+      }, new THREE.Vector2()).multiplyScalar(1 / points.length);
+
+      let middle = segments[0];
+      let middleDist = Infinity;
+      for (const segment of segments) {
+        const d = segment.center.distanceToSquared(centroid);
+        if (d < middleDist) {
+          middle = segment;
+          middleDist = d;
+        }
+      }
+
+      const sides = segments.filter(segment => segment !== middle);
+      const middleDir = middle.b.clone().sub(middle.a).normalize();
+      sides.sort((a, b) => {
+        const av = a.center.clone().sub(middle.center);
+        const bv = b.center.clone().sub(middle.center);
+        const ac = middleDir.x * av.y - middleDir.y * av.x;
+        const bc = middleDir.x * bv.y - middleDir.y * bv.x;
+        return ac - bc;
+      });
+
+      const all = [middle, ...sides];
+      const reserveCenter = all.reduce((acc, segment) => acc.add(segment.center), new THREE.Vector2()).multiplyScalar(1 / all.length);
+      const reserveRadius = Math.max(180, ...all.map(segment => segment.center.distanceTo(reserveCenter) + segment.length * 0.6));
+      return { middle, left: sides[0], right: sides[1], reserveCenter, reserveRadius };
+    }
+
+    async function buildOldRootSite(dataOriginal) {
       if (oldRootSiteGroup) {
         levelRoot.remove(oldRootSiteGroup);
         oldRootSiteGroup.traverse((obj) => {
@@ -3176,69 +3319,58 @@ const h = new Float32Array(mapW * mapH);
       }
       if (!heights) return;
 
-      const rootX = OLD_ROOT_SITE_X;
-      const rootZ = OLD_ROOT_SITE_Z;
-      const floorY = Math.max(SEA_LEVEL + 3, heightAtWorldRaw(rootX, rootZ - 64) - 34);
       const wallHeight = 210;
-      const backWidth = 168;
-      const sideWidth = 138;
       const group = new THREE.Group();
-      group.position.set(rootX, floorY, rootZ);
+      group.position.set(OLD_ROOT_SITE_OFFSET_X, 0, OLD_ROOT_SITE_OFFSET_Z);
 
       const texture = await makeOldRootSiteTexture();
-      const backMat = makeOldRootPanelMaterial(texture, 1 / 3);
+      const middleMat = makeOldRootPanelMaterial(texture, 1 / 3);
       const leftMat = makeOldRootPanelMaterial(texture, 2 / 3);
       const rightMat = makeOldRootPanelMaterial(texture, 0);
+      const layout = findOldRootWallLayout(dataOriginal);
 
-      function panelLocalX(yaw) {
-        return { x: Math.cos(yaw), z: -Math.sin(yaw) };
-      }
-
-      function addWall(name, width, height, x, z, yaw, mat) {
+      function addWall(name, segment, height, mat, flipX = false) {
+        const width = Math.max(OLD_ROOT_WALL_MIN_LENGTH, segment.length);
         const artGeo = new THREE.PlaneGeometry(width * 1.01, height * 1.01, 1, 1);
         const art = new THREE.Mesh(artGeo, mat);
         art.name = name;
-        art.position.set(x, height * 0.505, z);
-        art.rotation.y = yaw;
+        art.position.set(segment.center.x, SEA_LEVEL + height * 0.505, segment.center.y);
+        art.rotation.y = segment.yaw;
+        if (flipX) art.scale.x = -1;
         art.renderOrder = 2;
         group.add(art);
         return art;
       }
 
-      const backYaw = Math.PI;
-      const sideYaw = Math.PI * 0.74;
-      const backX = panelLocalX(backYaw);
-      const hingeOverlap = 1.6;
-      const leftHinge = {
-        x: backX.x * (backWidth * 0.5 - hingeOverlap),
-        z: OLD_ROOT_SITE_FACADE_Z + backX.z * (backWidth * 0.5 - hingeOverlap)
+      const fallbackLayout = {
+        middle: {
+          center: new THREE.Vector2(OLD_ROOT_SITE_X, OLD_ROOT_SITE_Z + OLD_ROOT_SITE_FACADE_Z),
+          length: 168,
+          yaw: Math.PI
+        },
+        left: {
+          center: new THREE.Vector2(OLD_ROOT_SITE_X - 110, OLD_ROOT_SITE_Z - 70),
+          length: 138,
+          yaw: Math.PI * 0.74
+        },
+        right: {
+          center: new THREE.Vector2(OLD_ROOT_SITE_X + 110, OLD_ROOT_SITE_Z - 70),
+          length: 138,
+          yaw: -Math.PI * 0.74
+        },
+        reserveCenter: new THREE.Vector2(OLD_ROOT_SITE_X, OLD_ROOT_SITE_Z),
+        reserveRadius: 180
       };
-      const rightHinge = {
-        x: -backX.x * (backWidth * 0.5 - hingeOverlap),
-        z: OLD_ROOT_SITE_FACADE_Z - backX.z * (backWidth * 0.5 - hingeOverlap)
-      };
-      const leftX = panelLocalX(sideYaw);
-      const rightX = panelLocalX(-sideYaw);
+      const wallLayout = layout || fallbackLayout;
 
-      addWall('old-root-back-wall', backWidth, wallHeight, 0, OLD_ROOT_SITE_FACADE_Z, backYaw, backMat);
-      addWall(
-        'old-root-left-wall',
-        sideWidth,
-        wallHeight * 0.92,
-        leftHinge.x + leftX.x * (sideWidth * 0.5),
-        leftHinge.z + leftX.z * (sideWidth * 0.5),
-        sideYaw,
-        leftMat
-      );
-      addWall(
-        'old-root-right-wall',
-        sideWidth,
-        wallHeight * 0.92,
-        rightHinge.x - rightX.x * (sideWidth * 0.5),
-        rightHinge.z - rightX.z * (sideWidth * 0.5),
-        -sideYaw,
-        rightMat
-      );
+      addWall('old-root-middle-wall', wallLayout.middle, wallHeight, middleMat);
+      addWall('old-root-left-wall', wallLayout.left, wallHeight * 0.92, leftMat, true);
+      addWall('old-root-right-wall', wallLayout.right, wallHeight * 0.92, rightMat);
+      oldRootSiteReserve = {
+        x: wallLayout.reserveCenter.x + OLD_ROOT_SITE_OFFSET_X,
+        z: wallLayout.reserveCenter.y + OLD_ROOT_SITE_OFFSET_Z,
+        r: wallLayout.reserveRadius
+      };
 
       const floorGeo = new THREE.CircleGeometry(108, 24, 0.08 * Math.PI, 0.84 * Math.PI);
       floorGeo.rotateX(-Math.PI / 2);
@@ -3253,36 +3385,24 @@ const h = new Float32Array(mapW * mapH);
       });
       const floor = new THREE.Mesh(floorGeo, floorMat);
       floor.name = 'old-root-cut-floor';
-      floor.position.set(0, 0.18, OLD_ROOT_SITE_FACADE_Z + 42);
-      floor.rotation.y = Math.PI;
+      const middleNormal = new THREE.Vector2(Math.sin(wallLayout.middle.yaw), Math.cos(wallLayout.middle.yaw));
+      floor.position.set(
+        wallLayout.middle.center.x + middleNormal.x * 42,
+        SEA_LEVEL + 0.18,
+        wallLayout.middle.center.y + middleNormal.y * 42
+      );
+      floor.rotation.y = wallLayout.middle.yaw;
       floor.renderOrder = 1;
       group.add(floor);
-
-      const doorGeo = new THREE.PlaneGeometry(22, 42, 1, 1);
-      const doorMat = new THREE.MeshBasicMaterial({
-        color: 0x050507,
-        transparent: true,
-        opacity: 0.96,
-        depthTest: true,
-        depthWrite: true,
-        fog: false,
-        side: THREE.DoubleSide
-      });
-      const door = new THREE.Mesh(doorGeo, doorMat);
-      door.name = 'old-root-door-shadow';
-      door.position.set(0, 30, OLD_ROOT_SITE_FACADE_Z - 0.24);
-      door.rotation.y = Math.PI;
-      door.renderOrder = 2;
-      group.add(door);
 
       oldRootSiteGroup = group;
       levelRoot.add(oldRootSiteGroup);
     }
 
     function isInsideOldRootSiteReserve(wx, wz) {
-      const dx = wx - OLD_ROOT_SITE_X;
-      const dz = wz - OLD_ROOT_SITE_Z;
-      return dx * dx + dz * dz < 180 * 180;
+      const dx = wx - oldRootSiteReserve.x;
+      const dz = wz - oldRootSiteReserve.z;
+      return dx * dx + dz * dz < oldRootSiteReserve.r * oldRootSiteReserve.r;
     }
 
     /* =========================
@@ -4462,13 +4582,13 @@ const h = new Float32Array(mapW * mapH);
     const SEAWALL_HEIGHT = (PLAYER_CAPSULE_H + PLAYER_RADIUS * 2.0) * 0.443;
     const SEAWALL_THICKNESS = 8.0;
     const SEAWALL_COLLIDER_BUFFER = 0.35;
-    const SEAWALL_SAMPLE_STEP = 9;
+    const SEAWALL_SAMPLE_STEP = 3;
     const SEAWALL_MIN_PATH_PIXELS = 80;
     const SEAWALL_MIN_EXTENT_PX = 120;
 
     function isSeawallPathPixel(r, g, b, a) {
       if (a < 16) return false;
-      return r >= 170 && g <= 70 && b <= 70;
+      return r >= 190 && g <= 135 && b <= 135 && r >= g + 60 && r >= b + 60;
     }
 
     function collectSeawallPathsFromBitmap(data) {
@@ -4523,87 +4643,62 @@ const h = new Float32Array(mapW * mapH);
         const extent = Math.max(maxX - minX, maxY - minY);
         if (points.length < SEAWALL_MIN_PATH_PIXELS || extent < SEAWALL_MIN_EXTENT_PX) return;
 
-        let start = points[0];
-        for (const p of points) {
-          if (p.y < start.y || (p.y === start.y && p.x < start.x)) start = p;
-        }
-
         const remaining = new Set(points.map(p => idx(p.x, p.y)));
-        const ordered = [];
-        let cur = start;
         while (remaining.size) {
-          ordered.push(cur);
-          remaining.delete(idx(cur.x, cur.y));
-
-          let best = null;
-          let bestD2 = Infinity;
-          for (const ni of remaining) {
-            const nx = ni % mapW;
-            const ny = (ni / mapW) | 0;
-            const dx = nx - cur.x;
-            const dy = ny - cur.y;
-            const d2 = dx * dx + dy * dy;
-            if (d2 < bestD2) {
-              bestD2 = d2;
-              best = { x: nx, y: ny };
+          let startI = null;
+          let startX = Infinity;
+          let startY = Infinity;
+          for (const i of remaining) {
+            const x = i % mapW;
+            const y = (i / mapW) | 0;
+            if (y < startY || (y === startY && x < startX)) {
+              startI = i;
+              startX = x;
+              startY = y;
             }
           }
-          if (!best || bestD2 > 36) break;
-          cur = best;
-        }
+          if (startI === null) break;
 
-        const sampled = [];
-        for (let i = 0; i < ordered.length; i += SEAWALL_SAMPLE_STEP) {
-          const p = ordered[i];
-          sampled.push(new THREE.Vector2(p.x * cell - halfW + cell * 0.5, p.y * cell - halfH + cell * 0.5));
+          const ordered = [];
+          let cur = { x: startX, y: startY };
+          while (remaining.size) {
+            ordered.push(cur);
+            remaining.delete(idx(cur.x, cur.y));
+
+            let best = null;
+            let bestD2 = Infinity;
+            for (const ni of remaining) {
+              const nx = ni % mapW;
+              const ny = (ni / mapW) | 0;
+              const dx = nx - cur.x;
+              const dy = ny - cur.y;
+              const d2 = dx * dx + dy * dy;
+              if (d2 < bestD2) {
+                bestD2 = d2;
+                best = { x: nx, y: ny };
+              }
+            }
+            if (!best || bestD2 > 36) break;
+            cur = best;
+          }
+
+          const sampled = [];
+          for (let i = 0; i < ordered.length; i += SEAWALL_SAMPLE_STEP) {
+            const p = ordered[i];
+            sampled.push(new THREE.Vector2(p.x * cell - halfW + cell * 0.5, p.y * cell - halfH + cell * 0.5));
+          }
+          if (ordered.length > 1) {
+            const p = ordered[ordered.length - 1];
+            sampled.push(new THREE.Vector2(p.x * cell - halfW + cell * 0.5, p.y * cell - halfH + cell * 0.5));
+          }
+          if (sampled.length > 1) paths.push(sampled);
         }
-        if (ordered.length > 1) {
-          const p = ordered[ordered.length - 1];
-          sampled.push(new THREE.Vector2(p.x * cell - halfW + cell * 0.5, p.y * cell - halfH + cell * 0.5));
-        }
-        const simp = simplifyOpenPathRDP2D(sampled, 1.6);
-        if (simp.length > 1) paths.push(simp);
       }
 
       for (const i of redIndices) {
         if (!seen[i]) addComponent(i);
       }
       return paths;
-    }
-
-    function simplifyOpenPathRDP2D(points, eps) {
-      if (points.length <= 2) return points;
-
-      function distPointToSeg(p, a, b) {
-        const vx = b.x - a.x, vy = b.y - a.y;
-        const wx = p.x - a.x, wy = p.y - a.y;
-        const c1 = vx * wx + vy * wy;
-        if (c1 <= 0) return Math.hypot(p.x - a.x, p.y - a.y);
-        const c2 = vx * vx + vy * vy;
-        if (c2 <= c1) return Math.hypot(p.x - b.x, p.y - b.y);
-        const t = c1 / c2;
-        const px = a.x + t * vx;
-        const py = a.y + t * vy;
-        return Math.hypot(p.x - px, p.y - py);
-      }
-
-      function rdp(arr) {
-        if (arr.length <= 2) return arr;
-        const a = arr[0], b = arr[arr.length - 1];
-        let maxD = -1, idxMax = -1;
-        for (let i = 1; i < arr.length - 1; i++) {
-          const d = distPointToSeg(arr[i], a, b);
-          if (d > maxD) { maxD = d; idxMax = i; }
-        }
-        if (maxD > eps) {
-          const left = rdp(arr.slice(0, idxMax + 1));
-          const right = rdp(arr.slice(idxMax));
-          return left.slice(0, -1).concat(right);
-        }
-        return [a, b];
-      }
-
-      return rdp(points);
     }
 
     function clearSeawall() {
@@ -4668,7 +4763,12 @@ const h = new Float32Array(mapW * mapH);
 
           const mx = (a.x + b.x) * 0.5;
           const mz = (a.y + b.y) * 0.5;
-          const baseY = SEA_LEVEL;
+          const baseY = Math.max(
+            SEA_LEVEL,
+            heightAtWorldRaw(a.x, a.y),
+            heightAtWorldRaw(mx, mz),
+            heightAtWorldRaw(b.x, b.y)
+          );
 
           p.set(mx, baseY + SEAWALL_HEIGHT * 0.5, mz);
           e.set(0, Math.atan2(dx, dz), 0);
@@ -4954,8 +5054,9 @@ const h = new Float32Array(mapW * mapH);
     }
 
     function placeMonsterNextToPlayer() {
-      const x = THREE.MathUtils.clamp(playerPos.x + 5.5, -halfW + 1, halfW - 1);
-      const z = THREE.MathUtils.clamp(playerPos.z + 4.0, -halfH + 1, halfH - 1);
+      const monsterSpawn = oldRootSpawnRegion?.monster || { x: playerPos.x + 5.5, z: playerPos.z + 4.0 };
+      const x = THREE.MathUtils.clamp(monsterSpawn.x, -halfW + 1, halfW - 1);
+      const z = THREE.MathUtils.clamp(monsterSpawn.z, -halfH + 1, halfH - 1);
       const y = Math.max(heightAtWorld(x, z), SEA_LEVEL);
       monsterRoot.position.set(x, y, z);
       monsterRoot.rotation.set(0, yaw + Math.PI * 0.25, 0);
@@ -5093,6 +5194,8 @@ const h = new Float32Array(mapW * mapH);
     /* =========================
        PLAYER SPAWN
     ========================= */
+    let oldRootSpawnRegion = null;
+
     function findPlayerSpawn(data) {
       for (let y = 0; y < mapH; y++) {
         for (let x = 0; x < mapW; x++) {
@@ -5105,6 +5208,46 @@ const h = new Float32Array(mapW * mapH);
         }
       }
       return { x: 0, z: 0 };
+    }
+
+    function findOldRootSpawnRegion(data) {
+      const points = [];
+      let sumX = 0;
+      let sumY = 0;
+
+      for (let y = 0; y < mapH; y++) {
+        for (let x = 0; x < mapW; x++) {
+          const p = idx(x, y) * 4;
+          const r = data[p], g = data[p + 1], b = data[p + 2], a = data[p + 3];
+          if (!isOldRootSpawnPixel(r, g, b, a)) continue;
+          points.push({ x, y });
+          sumX += x;
+          sumY += y;
+        }
+      }
+
+      if (!points.length) return null;
+
+      const cx = sumX / points.length;
+      const cy = sumY / points.length;
+      let monsterPixel = points[0];
+      let farthestD2 = -1;
+      for (const p of points) {
+        const dx = p.x - cx;
+        const dy = p.y - cy;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > farthestD2) {
+          farthestD2 = d2;
+          monsterPixel = p;
+        }
+      }
+
+      const player = mapPixelToWorld2(cx, cy);
+      const monster = mapPixelToWorld2(monsterPixel.x, monsterPixel.y);
+      return {
+        player: { x: player.x, z: player.y },
+        monster: { x: monster.x, z: monster.y }
+      };
     }
 
     /* =========================
@@ -5190,6 +5333,8 @@ const h = new Float32Array(mapW * mapH);
       // optional: clamp to ground in case terrain moved
       const groundY = Math.max(heightAtWorld(playerPos.x, playerPos.z), SEA_LEVEL) + PLAYER_EYE_HEIGHT;
       playerPos.y = groundY;
+      placeMonsterNextToPlayer();
+      pickMonsterTarget();
 
       // re-lock pointer (R is usually a user gesture)
       const c = document.getElementById('c');
@@ -5279,6 +5424,7 @@ const h = new Float32Array(mapW * mapH);
 
       // Marker/object extraction should use original pixels; height derivation mutates channels.
       const sp = findPlayerSpawn(dataOriginal);
+      oldRootSpawnRegion = findOldRootSpawnRegion(dataOriginal);
 
       const derived = deriveHeightsAndWater(dataForHeights);
       heights = derived.heights;
@@ -5299,13 +5445,13 @@ const h = new Float32Array(mapW * mapH);
       const bridgeBand = collectBridgeBandFromBitmap(dataOriginal);
       buildBridgePrism(bridgeBand);
       buildSeawallFromBitmap(dataOriginal);
-      await buildOldRootSite();
+      await buildOldRootSite(dataOriginal);
 
       rebuildColliderGrid();
 
-      const spawnTarget = TEMP_SPAWN_ON_OLD_ROOT_ISLAND
+      const spawnTarget = oldRootSpawnRegion?.player || (TEMP_SPAWN_ON_OLD_ROOT_ISLAND
         ? findNearestDrySpawn(OLD_ROOT_SITE_X, OLD_ROOT_SITE_Z - 430)
-        : sp;
+        : sp);
       const py = Math.max(heightAtWorld(spawnTarget.x, spawnTarget.z), SEA_LEVEL) + PLAYER_EYE_HEIGHT;
       playerPos.set(spawnTarget.x, py, spawnTarget.z);
 
@@ -5398,11 +5544,15 @@ const h = new Float32Array(mapW * mapH);
         const upInput = (keys.has('Space') ? 1 : 0) - ((keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyC')) ? 1 : 0);
         const flySpeed = sprint ? NOCLIP_SPRINT_SPEED : NOCLIP_SPEED;
 
-        noclipForwardV.set(
-          -Math.sin(yaw) * Math.cos(pitch),
-          Math.sin(pitch),
-          -Math.cos(yaw) * Math.cos(pitch)
-        );
+        if (VIEW_MODE === 'third') {
+          camera.getWorldDirection(noclipForwardV);
+        } else {
+          noclipForwardV.set(
+            -Math.sin(yaw) * Math.cos(pitch),
+            Math.sin(pitch),
+            -Math.cos(yaw) * Math.cos(pitch)
+          );
+        }
         if (noclipForwardV.lengthSq() < 1e-8) noclipForwardV.set(0, 0, -1);
         noclipForwardV.normalize();
 
