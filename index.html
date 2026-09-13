@@ -4581,8 +4581,11 @@ const h = new Float32Array(mapW * mapH);
 
     const SEAWALL_HEIGHT = (PLAYER_CAPSULE_H + PLAYER_RADIUS * 2.0) * 0.443;
     const SEAWALL_THICKNESS = 8.0;
-    const SEAWALL_COLLIDER_BUFFER = 0.35;
-    const SEAWALL_SAMPLE_STEP = 3;
+    const SEAWALL_EMBED_DEPTH = 16.0;
+    const SEAWALL_COLLIDER_BUFFER = 1.5;
+    const SEAWALL_POINT_SPACING = 20.0;
+    const SEAWALL_TRACE_MAX_GAP_PX = 12;
+    const SEAWALL_SEGMENT_OVERLAP = SEAWALL_THICKNESS * 1.25;
     const SEAWALL_MIN_PATH_PIXELS = 80;
     const SEAWALL_MIN_EXTENT_PX = 120;
 
@@ -4678,18 +4681,50 @@ const h = new Float32Array(mapW * mapH);
                 best = { x: nx, y: ny };
               }
             }
-            if (!best || bestD2 > 36) break;
+            if (!best || bestD2 > SEAWALL_TRACE_MAX_GAP_PX * SEAWALL_TRACE_MAX_GAP_PX) break;
             cur = best;
           }
 
           const sampled = [];
-          for (let i = 0; i < ordered.length; i += SEAWALL_SAMPLE_STEP) {
-            const p = ordered[i];
-            sampled.push(new THREE.Vector2(p.x * cell - halfW + cell * 0.5, p.y * cell - halfH + cell * 0.5));
+          const toWorldPoint = (p) => new THREE.Vector2(
+            p.x * cell - halfW + cell * 0.5,
+            p.y * cell - halfH + cell * 0.5
+          );
+
+          if (ordered.length) sampled.push(toWorldPoint(ordered[0]));
+          let carry = 0;
+          let prev = ordered.length ? toWorldPoint(ordered[0]) : null;
+
+          for (let i = 1; i < ordered.length; i++) {
+            const next = toWorldPoint(ordered[i]);
+            const dx = next.x - prev.x;
+            const dy = next.y - prev.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist < 1e-6) {
+              prev = next;
+              continue;
+            }
+
+            let traveled = 0;
+            while (carry + (dist - traveled) >= SEAWALL_POINT_SPACING) {
+              const need = SEAWALL_POINT_SPACING - carry;
+              traveled += need;
+              const t = traveled / dist;
+              sampled.push(new THREE.Vector2(
+                THREE.MathUtils.lerp(prev.x, next.x, t),
+                THREE.MathUtils.lerp(prev.y, next.y, t)
+              ));
+              carry = 0;
+            }
+
+            carry += dist - traveled;
+            prev = next;
           }
+
           if (ordered.length > 1) {
-            const p = ordered[ordered.length - 1];
-            sampled.push(new THREE.Vector2(p.x * cell - halfW + cell * 0.5, p.y * cell - halfH + cell * 0.5));
+            const last = toWorldPoint(ordered[ordered.length - 1]);
+            const tail = sampled[sampled.length - 1];
+            if (!tail || tail.distanceTo(last) > 0.5) sampled.push(last);
           }
           if (sampled.length > 1) paths.push(sampled);
         }
@@ -4770,10 +4805,12 @@ const h = new Float32Array(mapW * mapH);
             heightAtWorldRaw(b.x, b.y)
           );
 
-          p.set(mx, baseY + SEAWALL_HEIGHT * 0.5, mz);
+          const wallHeight = SEAWALL_HEIGHT + SEAWALL_EMBED_DEPTH;
+
+          p.set(mx, baseY + (SEAWALL_HEIGHT * 0.5) - (SEAWALL_EMBED_DEPTH * 0.5), mz);
           e.set(0, Math.atan2(dx, dz), 0);
           q.setFromEuler(e);
-          s.set(SEAWALL_THICKNESS, SEAWALL_HEIGHT, len + SEAWALL_THICKNESS * 0.5);
+          s.set(SEAWALL_THICKNESS, wallHeight, len + SEAWALL_SEGMENT_OVERLAP);
           m.compose(p, q, s);
           mesh.setMatrixAt(segmentIndex++, m);
 
@@ -5764,6 +5801,8 @@ const h = new Float32Array(mapW * mapH);
     const camPos = new THREE.Vector3();
     const camTarget = new THREE.Vector3();
     const desiredCam = new THREE.Vector3();
+    const boomStart = new THREE.Vector3();
+    const boomEnd = new THREE.Vector3();
     const tmpRayDir = new THREE.Vector3();
 
     function updatePlayerModelAndCamera(dt) {
@@ -5807,16 +5846,6 @@ const h = new Float32Array(mapW * mapH);
       }
 
       // Third-person follow camera
-      const back = THIRD_CAM_BACK;
-      const up = THIRD_CAM_UP + (Math.sin(pitch) * 0.4 * PLAYER_SCALE);
-
-      // desired camera position (behind player based on yaw)
-      desiredCam.set(
-        playerPos.x - Math.sin(yaw) * back,
-        (noclipEnabled ? playerPos.y - PLAYER_EYE_HEIGHT + up : heightAtWorld(playerPos.x, playerPos.z) + up),
-        playerPos.z - Math.cos(yaw) * back
-      );
-
       // Look-at target
       camTarget.set(
         playerPos.x,
@@ -5824,9 +5853,38 @@ const h = new Float32Array(mapW * mapH);
         playerPos.z
       );
 
-      // Optional simple anti-clipping: if desiredCam is "inside ground", lift it
-      const camGround = heightAtWorld(desiredCam.x, desiredCam.z) + 0.65;
-      if (!noclipEnabled && desiredCam.y < camGround) desiredCam.y = camGround;
+      const back = THIRD_CAM_BACK;
+      const pitchLift = Math.sin(pitch) * 0.4 * PLAYER_SCALE;
+      const up = THIRD_CAM_UP + pitchLift;
+
+      boomStart.set(playerPos.x, camTarget.y, playerPos.z);
+
+      // desired camera position (behind player based on yaw)
+      boomEnd.set(
+        playerPos.x - Math.sin(yaw) * back,
+        (noclipEnabled ? playerPos.y - PLAYER_EYE_HEIGHT + up : heightAtWorld(playerPos.x, playerPos.z) + up),
+        playerPos.z - Math.cos(yaw) * back
+      );
+      desiredCam.copy(boomEnd);
+
+      // If the boom endpoint intersects terrain, move the camera along the boom
+      // toward the player instead of lifting it and stealing the look-up angle.
+      if (!noclipEnabled) {
+        const camGroundPadding = 0.65;
+        const endGround = heightAtWorld(desiredCam.x, desiredCam.z) + camGroundPadding;
+        if (desiredCam.y < endGround) {
+          let lo = 0;
+          let hi = 1;
+          for (let i = 0; i < 8; i++) {
+            const t = (lo + hi) * 0.5;
+            desiredCam.lerpVectors(boomStart, boomEnd, t);
+            const groundY = heightAtWorld(desiredCam.x, desiredCam.z) + camGroundPadding;
+            if (desiredCam.y < groundY) hi = t;
+            else lo = t;
+          }
+          desiredCam.lerpVectors(boomStart, boomEnd, lo);
+        }
+      }
 
       // Smooth camera
       camera.position.lerp(desiredCam, 1.0 - Math.pow(0.000001, dt));
