@@ -333,87 +333,7 @@
   }
 }
 </script>
-  <script>
-    (() => {
-      // Holds blobs + object URLs so they stay in memory
-      const mem = new Map(); // url -> { blob, objectUrl, bytes }
-
-      async function fetchToMemory(url, { signal } = {}) {
-        if (mem.has(url)) return mem.get(url);
-
-        const res = await fetch(url, { cache: "force-cache", signal });
-        if (!res.ok) throw new Error(`fetch failed ${res.status} for ${url}`);
-        const blob = await res.blob();
-        const objectUrl = URL.createObjectURL(blob);
-
-        const entry = { blob, objectUrl, bytes: blob.size };
-        mem.set(url, entry);
-        return entry;
-      }
-
-      // Optional: decode to avoid first-paint jank later
-      async function decodeImageObjectUrl(objectUrl) {
-        const img = new Image();
-        img.decoding = "async";
-        img.loading = "eager";
-        img.src = objectUrl;
-        // decode() is supported in modern browsers; fallback to onload
-        if (img.decode) {
-          await img.decode();
-        } else {
-          await new Promise((r, rej) => { img.onload = r; img.onerror = rej; });
-        }
-        return true;
-      }
-
-      // Concurrency-limited prefetch
-      async function prewarmImages(urls, { concurrency = 2, onProgress } = {}) {
-        let done = 0;
-        const queue = urls.slice();
-
-        async function worker() {
-          while (queue.length) {
-            const url = queue.shift();
-            const entry = await fetchToMemory(url);
-            await decodeImageObjectUrl(entry.objectUrl);
-            done++;
-            onProgress?.(done, urls.length, url, entry.bytes);
-          }
-        }
-
-        const workers = Array.from({ length: Math.max(1, concurrency) }, worker);
-        await Promise.all(workers);
-        return true;
-      }
-
-      async function prewarmFiles(urls, { concurrency = 2, onProgress } = {}) {
-        let done = 0;
-        const queue = urls.slice();
-
-        async function worker() {
-          while (queue.length) {
-            const url = queue.shift();
-            const entry = await fetchToMemory(url);
-            done++;
-            onProgress?.(done, urls.length, url, entry.bytes);
-          }
-        }
-
-        const workers = Array.from({ length: Math.max(1, concurrency) }, worker);
-        await Promise.all(workers);
-        return true;
-      }
-
-      // Expose tiny API
-      window.__mfMemAssets = {
-        has: (url) => mem.has(url),
-        getObjectUrl: (url) => mem.get(url)?.objectUrl || url,
-        getBlob: (url) => mem.get(url)?.blob || null,
-        prewarmImages,
-        prewarmFiles, // ✅ generic "fetch into memory" (great for audio)
-      };
-    })();
-  </script>
+  <script src="./src/assets/preload.js"></script>
 </head>
 
 <body>
@@ -1306,11 +1226,11 @@
     /*
       MODULARIZATION ROADMAP
 
-      Current extraction:
+      Completed extractions:
       - src/audio/footsteps.js owns footstep asset URLs, decode state, readiness, and playback.
+      - src/assets/preload.js owns window.__mfMemAssets prewarming and memory cache.
 
       Future low-risk extractions:
-      - src/assets/preload.js for window.__mfMemAssets prewarming and memory cache.
       - src/ui/titleScreen.js for title modal, loader text, start input, and pointer-lock handoff.
       - src/ui/cutscene.js for the opening story/cutscene sequence.
       - src/render/materials.js for toon ramps, character shading, and shader tweaks.
