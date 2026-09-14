@@ -1046,7 +1046,7 @@
       <div class="prompt">&gt;</div>
       <div class="input" id="devConsoleInput"></div>
     </div>
-    <div class="help">Tab to close • Enter to run • noclip toggles fly mode</div>
+    <div class="help">Tab to close • Enter to run • noclip toggles fly mode • player toggles prism stand-in</div>
   </div>
   <div id="mfDeath" aria-hidden="true">
     <div class="panel">
@@ -1293,12 +1293,50 @@
 
   <script type="module">
     import * as THREE from 'three';
-    const IS_FIREFOX = /firefox/i.test(navigator.userAgent);
-    const WORLD_DETAIL = IS_FIREFOX
-      ? { pixelRatio: 0.75, antialias: false, sampleStep: 12, smoothPasses: 1, slopePasses: 4, maxTrees: 900, targetFps: 30 }
-      : { pixelRatio: Math.min(devicePixelRatio, 1.5), antialias: true, sampleStep: 4, smoothPasses: 3, slopePasses: 16, maxTrees: 12000, targetFps: 60 };
     import { GLTFLoader } from './vendor/GLTFLoader.js';
     import { mergeGeometries } from './utils/BufferGeometryUtils.js';
+    import {
+      FOOTSTEP_INTERVAL_S,
+      WALK_STEP_SOUNDS,
+      ensureFootstepsReady,
+      isFootstepsReady,
+      playFootstep
+    } from './src/audio/footsteps.js';
+
+    /*
+      MODULARIZATION ROADMAP
+
+      Current extraction:
+      - src/audio/footsteps.js owns footstep asset URLs, decode state, readiness, and playback.
+
+      Future low-risk extractions:
+      - src/assets/preload.js for window.__mfMemAssets prewarming and memory cache.
+      - src/ui/titleScreen.js for title modal, loader text, start input, and pointer-lock handoff.
+      - src/ui/cutscene.js for the opening story/cutscene sequence.
+      - src/render/materials.js for toon ramps, character shading, and shader tweaks.
+      - src/dev/console.js for the hidden Tab cheat console.
+
+      Future gameplay extractions:
+      - src/actors/monster.js for Muffin Man loading, wandering, and later medicine-attractor behavior.
+      - src/actors/player.js for movement, jump/gravity, death hazards, and avatar animation.
+      - src/camera/followCamera.js for first-person/third-person camera behavior.
+
+      Future world/engine extractions:
+      - src/world/terrain.js for map interpretation, height derivation, terrain mesh, and height queries.
+      - src/world/water.js for sea plane and shoreline mist.
+      - src/world/oldRootSite.js for old-root-site image layout.
+      - src/world/seawall.js for red-barrier sampling, seawall mesh, and wall colliders.
+      - src/world/trees.js for tree extraction, Douglas fir instancing, and tree colliders.
+      - src/physics/colliders.js for spatial hash, capsule collisions, and character separation.
+
+      Refactor rule:
+      - Move one system at a time, pass shared state through a game/world context, and verify local load after each move.
+    */
+
+    const IS_FIREFOX = /firefox/i.test(navigator.userAgent);
+    const WORLD_DETAIL = IS_FIREFOX
+      ? { pixelRatio: 0.75, antialias: false, sampleStep: 12, smoothPasses: 1, slopePasses: 2, maxTrees: 900, targetFps: 30 }
+      : { pixelRatio: Math.min(devicePixelRatio, 1.5), antialias: true, sampleStep: 4, smoothPasses: 2, slopePasses: 4, maxTrees: 12000, targetFps: 60 };
 
     /* =========================
        FILES
@@ -1310,99 +1348,13 @@
     const PLAYER_IDLE_GLB = './assets/player/idle.glb';
     const MONSTER_IDLE_GLB = './assets/monster/idle.glb';
     const MONSTER_WALK_GLB = './assets/monster/walking.glb';
-
-    /* =========================
-       AUDIO (walking footsteps only)
-    ========================= */
-    const WALK_STEP_1_URL = "./audio/step_8.mp3";
-    const WALK_STEP_2_URL = "./audio/step_9.mp3";
-    const WALK_STEP_3_URL = "./audio/step_4.mp3"; // <-- your new one
-
-    const WALK_STEP_SOUNDS = [WALK_STEP_1_URL, WALK_STEP_2_URL, WALK_STEP_3_URL];
-
-    let audioCtx = null;
-    let footGain = null;
-    let footBufA = null;
-    let footBufB = null;
-    let footBufC = null; // ✅ new
-    let footNext = 0;
-    let footReady = false;
+    let OBSCURE_PLAYER_MODEL = true;
 
     let footTimer = 0;
-    // Tweak: smaller = more frequent steps
-    const FOOTSTEP_INTERVAL_S = 0.42;
-    // volume tuning
-    const FOOTSTEP_GAIN = 0.22;
-
-    let footLoading = false; // add near your other foot vars
+    window.ensureFootstepsReady = ensureFootstepsReady;
 
     //Controls the gradients of green for all hills.
     const brightestHillColor = '#2ED07B';
-
-    async function ensureFootstepsReady() {
-      if (footReady || footLoading) return footReady;
-      footLoading = true;
-
-      // Must be called after a user gesture (your start)
-      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-      if (audioCtx.state === "suspended") {
-        try { await audioCtx.resume(); } catch { }
-      }
-
-      footGain = footGain || audioCtx.createGain();
-      footGain.gain.value = FOOTSTEP_GAIN;
-      footGain.connect(audioCtx.destination);
-
-      async function decodeFromMemOrFetch(url) {
-        const blob = window.__mfMemAssets?.getBlob(url);
-        const ab = blob ? await blob.arrayBuffer() : await (await fetch(url)).arrayBuffer();
-        return await audioCtx.decodeAudioData(ab);
-      }
-
-      try {
-        [footBufA, footBufB, footBufC] = await Promise.all([
-          decodeFromMemOrFetch(WALK_STEP_1_URL),
-          decodeFromMemOrFetch(WALK_STEP_2_URL),
-          decodeFromMemOrFetch(WALK_STEP_3_URL),
-        ]);
-
-        footReady = true;
-        footLoading = false;
-        return true;
-      } catch (err) {
-        console.warn("[audio] footstep decode failed:", err);
-        footReady = false;
-        footLoading = false;
-        return false;
-      }
-    }
-
-    // ✅ add this line after the function definition
-    window.ensureFootstepsReady = ensureFootstepsReady;
-
-    function playFootstep() {
-      if (!footReady || !audioCtx || !footGain) return;
-
-      // ~15% chance to use the “spice” sample
-      const RARE_CHANCE = 0.35;
-
-      let buf = null;
-
-      if (footBufC && Math.random() < RARE_CHANCE) {
-        buf = footBufC;
-      } else {
-        buf = (footNext++ % 2 === 0) ? footBufA : footBufB; // your existing A/B alternation
-      }
-
-      if (!buf) return;
-
-      const src = audioCtx.createBufferSource();
-      src.buffer = buf;
-      src.playbackRate.value = 0.96 + Math.random() * 0.08;
-
-      src.connect(footGain);
-      src.start();
-    }
 
     /* =========================
        WORLD TUNING
@@ -2280,6 +2232,11 @@
         coyoteT = 0;
         console.info('[cheat] noclip', noclipEnabled ? 'enabled' : 'disabled');
       }
+      if (cmd === 'player') {
+        OBSCURE_PLAYER_MODEL = !OBSCURE_PLAYER_MODEL;
+        loadPlayerModel();
+        console.info('[cheat] player model', OBSCURE_PLAYER_MODEL ? 'obscured' : 'visible');
+      }
     }
 
     /* Capture typing when console is open */
@@ -2467,7 +2424,7 @@ function rampGreenBetweenBands(data, W, H, passes=12){
 function deriveHeightsAndWater(data) {
       
   // GIS-style ramping between green contour bands
-  rampGreenBetweenBands(data, mapW, mapH, 16);
+  rampGreenBetweenBands(data, mapW, mapH, 6);
 const h = new Float32Array(mapW * mapH);
       const wmask = new Uint8Array(mapW * mapH);
       const topMask = new Uint8Array(mapW * mapH);
@@ -4933,6 +4890,35 @@ const h = new Float32Array(mapW * mapH);
     // Player-sized black prism stand-in
     const PLAYER_MODEL_FALLBACK_SCALE = 0.03;
 
+    function removeObjectTree(root) {
+      if (!root) return;
+      root.parent?.remove(root);
+      root.traverse((obj) => {
+        if (obj.geometry) obj.geometry.dispose();
+        if (obj.material) {
+          const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+          for (const mat of materials) mat.dispose();
+        }
+      });
+    }
+
+    function clearPlayerModel() {
+      removeObjectTree(playerIdle);
+      removeObjectTree(playerWalk);
+      removeObjectTree(playerRun);
+
+      playerIdle = null;
+      playerWalk = null;
+      playerRun = null;
+      playerIdleMixer = null;
+      playerWalkMixer = null;
+      playerRunMixer = null;
+      playerIdleAction = null;
+      playerWalkAction = null;
+      playerRunAction = null;
+      playerFallbackBuilt = false;
+    }
+
     function makeFallbackPlayerPrism() {
       const bodyH = (PLAYER_CAPSULE_H + (PLAYER_RADIUS * 2.0));
       const bodyW = (PLAYER_RADIUS * 2.0) * 1.05;
@@ -4977,6 +4963,15 @@ const h = new Float32Array(mapW * mapH);
       playerRunAction = null;
 
       playerFallbackBuilt = true;
+    }
+
+    function useFallbackPlayerModel() {
+      clearPlayerModel();
+      ensurePlayerModelReady();
+      playerCharacterRadius = measuredCharacterRadius(
+        playerIdle || playerWalk || playerRun,
+        PLAYER_CHARACTER_RADIUS_DEFAULT
+      );
     }
 
     /* =========================
@@ -5046,73 +5041,98 @@ const h = new Float32Array(mapW * mapH);
     }
 
     async function loadPlayerModel() {
-      // Idle (when not moving)
-      const gltfIdle = await safeLoad('player idle GLB', PLAYER_IDLE_GLB, (u) => loader.loadAsync(u));
-      if (gltfIdle && gltfIdle.scene) {
-        playerIdle = gltfIdle.scene;
-        applyCharacterShading(playerIdle);
-        playerIdle.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
-        // Default state is idle
-        playerIdle.visible = true;
-        playerRoot.add(playerIdle);
+      if (OBSCURE_PLAYER_MODEL) {
+        useFallbackPlayerModel();
+        return;
+      }
 
-        playerIdleMixer = new THREE.AnimationMixer(playerIdle);
+      let nextIdle = null;
+      let nextWalk = null;
+      let nextRun = null;
+      let nextIdleMixer = null;
+      let nextWalkMixer = null;
+      let nextRunMixer = null;
+      let nextIdleAction = null;
+      let nextWalkAction = null;
+      let nextRunAction = null;
+
+      const [gltfIdle, gltfWalk, gltfRun] = await Promise.all([
+        safeLoad('player idle GLB', PLAYER_IDLE_GLB, (u) => loader.loadAsync(u)),
+        safeLoad('player walk GLB', PLAYER_WALK_GLB, (u) => loader.loadAsync(u)),
+        safeLoad('player run GLB', PLAYER_RUN_GLB, (u) => loader.loadAsync(u)),
+      ]);
+
+      // Idle (when not moving)
+      if (gltfIdle && gltfIdle.scene) {
+        nextIdle = gltfIdle.scene;
+        applyCharacterShading(nextIdle);
+        nextIdle.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
+        // Default state is idle
+        nextIdle.visible = true;
+
+        nextIdleMixer = new THREE.AnimationMixer(nextIdle);
         if (gltfIdle.animations && gltfIdle.animations.length) {
-          playerIdleAction = playerIdleMixer.clipAction(gltfIdle.animations[0]);
-          playerIdleAction.play();
+          nextIdleAction = nextIdleMixer.clipAction(gltfIdle.animations[0]);
+          nextIdleAction.play();
         }
-      } else {
-        // If idle GLB fails, we'll fall back to walk-as-idle via setPlayerModelMode()
-        playerIdle = null;
-        playerIdleMixer = null;
-        playerIdleAction = null;
       }
 
       // Walking
-      const gltfWalk = await safeLoad('player walk GLB', PLAYER_WALK_GLB, (u) => loader.loadAsync(u));
       if (gltfWalk && gltfWalk.scene) {
-        playerWalk = gltfWalk.scene;
-        applyCharacterShading(playerWalk);
-        playerWalk.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
+        nextWalk = gltfWalk.scene;
+        applyCharacterShading(nextWalk);
+        nextWalk.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
         // Start hidden until we actually move (or until idle is missing)
-        playerWalk.visible = !playerIdle;
-        playerRoot.add(playerWalk);
+        nextWalk.visible = !nextIdle;
 
-        playerWalkMixer = new THREE.AnimationMixer(playerWalk);
+        nextWalkMixer = new THREE.AnimationMixer(nextWalk);
         if (gltfWalk.animations && gltfWalk.animations.length) {
-          playerWalkAction = playerWalkMixer.clipAction(gltfWalk.animations[0]);
-          playerWalkAction.play();
+          nextWalkAction = nextWalkMixer.clipAction(gltfWalk.animations[0]);
+          nextWalkAction.play();
         }
-      } else {
-        playerWalk = makeFallbackPlayerPrism();
-        // If idle exists, keep walk hidden by default
-        playerWalk.visible = !playerIdle;
-        playerRoot.add(playerWalk);
-        playerWalkMixer = null;
-        playerWalkAction = null;
       }
 
       // Running
-      const gltfRun = await safeLoad('player run GLB', PLAYER_RUN_GLB, (u) => loader.loadAsync(u));
       if (gltfRun && gltfRun.scene) {
-        playerRun = gltfRun.scene;
-        applyCharacterShading(playerRun);
-        playerRun.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
-        playerRun.visible = false;
-        playerRoot.add(playerRun);
+        nextRun = gltfRun.scene;
+        applyCharacterShading(nextRun);
+        nextRun.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
+        nextRun.visible = false;
 
-        playerRunMixer = new THREE.AnimationMixer(playerRun);
+        nextRunMixer = new THREE.AnimationMixer(nextRun);
         if (gltfRun.animations && gltfRun.animations.length) {
-          playerRunAction = playerRunMixer.clipAction(gltfRun.animations[0]);
-          playerRunAction.play();
+          nextRunAction = nextRunMixer.clipAction(gltfRun.animations[0]);
+          nextRunAction.play();
         }
-      } else {
-        playerRun = makeFallbackPlayerPrism();
-        playerRun.visible = false;
-        playerRoot.add(playerRun);
-        playerRunMixer = null;
-        playerRunAction = null;
       }
+
+      if (OBSCURE_PLAYER_MODEL) {
+        removeObjectTree(nextIdle);
+        removeObjectTree(nextWalk);
+        removeObjectTree(nextRun);
+        return;
+      }
+
+      if (!nextIdle && !nextWalk && !nextRun) {
+        useFallbackPlayerModel();
+        return;
+      }
+
+      clearPlayerModel();
+
+      playerIdle = nextIdle;
+      playerWalk = nextWalk;
+      playerRun = nextRun;
+      playerIdleMixer = nextIdleMixer;
+      playerWalkMixer = nextWalkMixer;
+      playerRunMixer = nextRunMixer;
+      playerIdleAction = nextIdleAction;
+      playerWalkAction = nextWalkAction;
+      playerRunAction = nextRunAction;
+
+      if (playerIdle) playerRoot.add(playerIdle);
+      if (playerWalk) playerRoot.add(playerWalk);
+      if (playerRun) playerRoot.add(playerRun);
 
       playerCharacterRadius = measuredCharacterRadius(
         playerIdle || playerWalk || playerRun,
@@ -5554,15 +5574,20 @@ const h = new Float32Array(mapW * mapH);
 
       await loadLevel();
       await loadPlayerModel();
-      await loadMonsterModel();
 
-      // IMPORTANT: don’t say “ready” until the cutscene assets are hot too
+      // IMPORTANT: don’t say “ready” until the level and cutscene assets are hot.
+      // Monster assets are large, so they keep loading in the background.
       if (prewarmPromise) await prewarmPromise;
 
     } catch (err) {
       console.error('[init] world init failed:', err);
     } finally {
       window.dispatchEvent(new Event('mf:world-ready'));
+      setTimeout(() => {
+        loadMonsterModel().catch((err) => {
+          console.warn('[monster] background load failed:', err);
+        });
+      }, 0);
     }
 
     /* =========================
@@ -5809,7 +5834,7 @@ const h = new Float32Array(mapW * mapH);
         !sprint &&                 // ✅ NOT running
         horizSpeed > 0.6;          // ✅ actually moving (not just holding keys)
 
-      if (isWalkingNow && footReady) {
+      if (isWalkingNow && isFootstepsReady()) {
         footTimer += dt;
 
         // optional: slight cadence scaling with speed (still simple)
