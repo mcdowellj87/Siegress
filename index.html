@@ -1222,6 +1222,7 @@
       isFootstepsReady,
       playFootstep
     } from './src/audio/footsteps.js';
+    import { setupDevConsole } from './src/dev/console.js';
 
     /*
       MODULARIZATION ROADMAP
@@ -1229,12 +1230,12 @@
       Completed extractions:
       - src/audio/footsteps.js owns footstep asset URLs, decode state, readiness, and playback.
       - src/assets/preload.js owns window.__mfMemAssets prewarming and memory cache.
+      - src/dev/console.js owns hidden console input, buffering, and command dispatch.
 
       Future low-risk extractions:
       - src/ui/titleScreen.js for title modal, loader text, start input, and pointer-lock handoff.
       - src/ui/cutscene.js for the opening story/cutscene sequence.
       - src/render/materials.js for toon ramps, character shading, and shader tweaks.
-      - src/dev/console.js for the hidden Tab cheat console.
 
       Future gameplay extractions:
       - src/actors/monster.js for Muffin Man loading, wandering, and later medicine-attractor behavior.
@@ -2106,102 +2107,41 @@
     /* =========================
        HIDDEN DEV CONSOLE (Tab)
     ========================= */
-    const devConsoleEl = document.getElementById('devConsole');
-    const devConsoleInputEl = document.getElementById('devConsoleInput');
-
-    let devConsoleOpen = false;
-    let devBuffer = '';
-
-    function openDevConsole() {
-      devConsoleOpen = true;
-      devBuffer = '';
-      devConsoleInputEl.textContent = '';
-      devConsoleEl.style.display = 'block';
-    }
-    function closeDevConsole() {
-      devConsoleOpen = false;
-      devBuffer = '';
-      devConsoleInputEl.textContent = '';
-      devConsoleEl.style.display = 'none';
-    }
-
-    function runDevCommand(cmdRaw) {
-      const cmd = cmdRaw.trim().toLowerCase();
-
-      if (cmd === 'superflea') {
-        // Ensure avatar exists even if ./assets/ is missing
-        ensurePlayerModelReady();
-        VIEW_MODE = (VIEW_MODE === 'third') ? 'first' : 'third';
+    setupDevConsole({
+      consoleEl: document.getElementById('devConsole'),
+      inputEl: document.getElementById('devConsoleInput'),
+      commands: {
+        superflea: () => {
+          // Ensure avatar exists even if ./assets/ is missing
+          ensurePlayerModelReady();
+          VIEW_MODE = (VIEW_MODE === 'third') ? 'first' : 'third';
+        },
+        gettingold: () => {
+          SUN_ARC_DURATION_S = (SUN_ARC_DURATION_S === SUN_ARC_DURATION_FAST_S)
+            ? SUN_ARC_DURATION_REAL_S
+            : SUN_ARC_DURATION_FAST_S;
+        },
+        glassfloor: () => {
+          glassfloorEnabled = !glassfloorEnabled;
+          if (terrainMesh) terrainMesh.visible = !glassfloorEnabled;
+          console.info('[cheat] glassfloor', glassfloorEnabled ? 'enabled' : 'disabled');
+        },
+        noclip: () => {
+          noclipEnabled = !noclipEnabled;
+          vel.set(0, 0, 0);
+          grounded = false;
+          supportedByCollider = false;
+          jumpBufferT = 0;
+          coyoteT = 0;
+          console.info('[cheat] noclip', noclipEnabled ? 'enabled' : 'disabled');
+        },
+        player: () => {
+          OBSCURE_PLAYER_MODEL = !OBSCURE_PLAYER_MODEL;
+          loadPlayerModel();
+          console.info('[cheat] player model', OBSCURE_PLAYER_MODEL ? 'obscured' : 'visible');
+        },
       }
-      if (cmd === 'gettingold') {
-        SUN_ARC_DURATION_S = (SUN_ARC_DURATION_S === SUN_ARC_DURATION_FAST_S)
-          ? SUN_ARC_DURATION_REAL_S
-          : SUN_ARC_DURATION_FAST_S;
-      }
-      if (cmd === 'glassfloor') {
-        glassfloorEnabled = !glassfloorEnabled;
-        if (terrainMesh) terrainMesh.visible = !glassfloorEnabled;
-        console.info('[cheat] glassfloor', glassfloorEnabled ? 'enabled' : 'disabled');
-      }
-      if (cmd === 'noclip') {
-        noclipEnabled = !noclipEnabled;
-        vel.set(0, 0, 0);
-        grounded = false;
-        supportedByCollider = false;
-        jumpBufferT = 0;
-        coyoteT = 0;
-        console.info('[cheat] noclip', noclipEnabled ? 'enabled' : 'disabled');
-      }
-      if (cmd === 'player') {
-        OBSCURE_PLAYER_MODEL = !OBSCURE_PLAYER_MODEL;
-        loadPlayerModel();
-        console.info('[cheat] player model', OBSCURE_PLAYER_MODEL ? 'obscured' : 'visible');
-      }
-    }
-
-    /* Capture typing when console is open */
-    addEventListener('keydown', (e) => {
-      // Tab toggles console (hidden feature)
-      if (e.code === 'Tab') {
-        e.preventDefault();
-
-        if (!devConsoleOpen) openDevConsole();
-        else closeDevConsole();
-
-        return;
-      }
-
-      if (!devConsoleOpen) return;
-
-      // While open: prevent gameplay input from firing
-      e.preventDefault();
-      e.stopPropagation();
-
-      if (e.code === 'Escape') {
-        closeDevConsole();
-        return;
-      }
-
-      if (e.code === 'Enter') {
-        runDevCommand(devBuffer);
-        closeDevConsole();
-        return;
-      }
-
-      if (e.code === 'Backspace') {
-        devBuffer = devBuffer.slice(0, -1);
-        devConsoleInputEl.textContent = devBuffer;
-        return;
-      }
-
-      // Accept printable characters
-      if (e.key && e.key.length === 1) {
-        // avoid weird control chars
-        if (e.ctrlKey || e.metaKey) return;
-        devBuffer += e.key;
-        devConsoleInputEl.textContent = devBuffer;
-      }
-    }, { capture: true });
+    });
 
     addEventListener('keydown', (e) => {
       if (!deathActive) return;
