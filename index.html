@@ -1719,11 +1719,11 @@
 
     /* Terrain */
     const TOON_RAMP_TUNDRA = makeToonRamp5([
-      '#051E11', // deep conifer shadow
-      '#0b3a22',
-      '#155f38',
-      '#4fa06a',
-      '#cfeee0'  // sunlit grass highlight
+      '#01131d', // deep teal hillside shadow
+      '#06313a',
+      '#12615b',
+      '#2f8d79',
+      '#62b99c'  // visible muted mint-teal highlight
     ]);
 
     /* Sea */
@@ -2679,10 +2679,40 @@ const h = new Float32Array(mapW * mapH);
       geo.computeVertexNormals();
 
       const mat = new THREE.MeshToonMaterial({
-        color: 0xffffff,
+        color: 0x257766,
+        emissive: 0x031720,
+        emissiveIntensity: 0.34,
         gradientMap: TOON_RAMP_TUNDRA,
         fog: true
       });
+      mat.onBeforeCompile = (shader) => {
+        shader.uniforms.uTerrainDitherBlue = { value: new THREE.Color(0x021526) };
+        shader.uniforms.uTerrainDitherStrength = { value: 0.32 };
+
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <common>',
+          `#include <common>
+           uniform vec3 uTerrainDitherBlue;
+           uniform float uTerrainDitherStrength;
+
+           float terrainDither(vec2 p) {
+             vec2 grid = floor(p / 3.0);
+             return fract(sin(dot(grid, vec2(127.1, 311.7))) * 43758.5453123);
+           }
+          `
+        );
+
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <output_fragment>',
+          `
+          float dither = terrainDither(gl_FragCoord.xy);
+          float blueMix = uTerrainDitherStrength * smoothstep(0.38, 0.92, dither);
+          outgoingLight = mix(outgoingLight, uTerrainDitherBlue, blueMix);
+
+          #include <output_fragment>
+          `
+        );
+      };
 
       terrainMesh = new THREE.Mesh(geo, mat);
       terrainMesh.renderOrder = 1;
