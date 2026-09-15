@@ -579,6 +579,7 @@
       playFootstep
     } from './src/audio/footsteps.js';
     import { setupDevConsole } from './src/dev/console.js';
+    import { createFollowCameraSystem } from './src/camera/followCamera.js';
     import { createColliderSystem } from './src/physics/colliders.js';
     import {
       TOON_RAMP_SKY_WATER,
@@ -617,13 +618,13 @@
       - src/world/water.js owns sea plane and shoreline mist.
       - src/world/trees.js owns tree extraction, Douglas fir instancing, and tree colliders.
       - src/physics/colliders.js owns spatial hash, capsule collisions, and character separation.
+      - src/camera/followCamera.js owns first-person/third-person camera behavior and pointer lock.
 
       Future low-risk extractions:
 
       Future gameplay extractions:
       - src/actors/monster.js for Muffin Man loading, wandering, and later medicine-attractor behavior.
       - src/actors/player.js for movement, jump/gravity, death hazards, and avatar animation.
-      - src/camera/followCamera.js for first-person/third-person camera behavior.
 
       Future world/engine extractions:
 
@@ -736,37 +737,6 @@
     const WATER_PLANE_SIZE = SKY_RADIUS * 2.0;
 
     /* =========================
-       THIRD PERSON CAMERA
-    ========================= */
-    let VIEW_MODE = 'third'; // 'first' | 'third'  (default: third-person)
-
-    // Zoom the default third-person camera in (keep the same angle by scaling back+up+look together)
-    const THIRD_CAM_ZOOM_FACTOR = 0.025; // 5x closer than before
-
-    let THIRD_CAM_BACK = 9.0 * PLAYER_SCALE * THIRD_CAM_ZOOM_FACTOR; // <-- mutable for mousewheel zoom
-    const THIRD_CAM_BACK_MIN = 2.2 * PLAYER_SCALE * THIRD_CAM_ZOOM_FACTOR;
-    const THIRD_CAM_BACK_MAX = 40.0 * PLAYER_SCALE * THIRD_CAM_ZOOM_FACTOR;
-    const THIRD_CAM_ZOOM_SPEED = 0.02 * PLAYER_SCALE * THIRD_CAM_ZOOM_FACTOR;
-
-    const THIRD_CAM_UP = 5.0 * PLAYER_SCALE * THIRD_CAM_ZOOM_FACTOR;
-    const THIRD_LOOK_UP = 1.8 * PLAYER_SCALE * THIRD_CAM_ZOOM_FACTOR // look-at height above ground
-    const THIRD_COLLIDE_PADDING = 0.22;
-
-    /* =========================
-       MOUSE LOOK (pointer lock)
-    ========================= */
-    let isLocked = false;
-    let yaw = -THREE.MathUtils.degToRad(30); // 30° clockwise (turn right)
-    let pitch = 0;  // radians
-    const MOUSE_SENS = 0.0022;
-    const PITCH_MIN = THREE.MathUtils.degToRad(-80);
-    const PITCH_MAX = THREE.MathUtils.degToRad(80);
-
-    function applyCameraRotation() {
-      camera.rotation.set(pitch, yaw, 0, 'YXZ');
-    }
-
-    /* =========================
        COLORS (from your PNG)
     ========================= */
     const COLORS = {
@@ -837,32 +807,18 @@
       renderer.setSize(innerWidth, innerHeight);
     });
 
-    /* =========================
-       POINTER LOCK + MOUSE LOOK
-    ========================= */
-    let CAN_LOCK = false;
+    const cameraSystem = createFollowCameraSystem({
+      canvas,
+      camera,
+      playerScale: PLAYER_SCALE,
+      playerEyeHeight: PLAYER_EYE_HEIGHT,
+      heightAtWorld
+    });
+
     // called by the title-screen script when the world is fully loaded
     window.__mfEnablePointerLock = () => {
-      CAN_LOCK = true;
+      cameraSystem.enablePointerLock();
     };
-
-    function lockPointer() {
-      if (!CAN_LOCK) return;
-      if (!document.pointerLockElement) canvas.requestPointerLock();
-    }
-    canvas.addEventListener('click', lockPointer);
-
-    document.addEventListener('pointerlockchange', () => {
-      isLocked = (document.pointerLockElement === canvas);
-    });
-
-    document.addEventListener('mousemove', (e) => {
-      if (!isLocked) return;
-      yaw -= e.movementX * MOUSE_SENS;
-      // mouse up => look up, mouse down => look down
-      pitch += e.movementY * MOUSE_SENS;
-      pitch = THREE.MathUtils.clamp(pitch, PITCH_MIN, PITCH_MAX);
-    });
 
     /* =========================
        LIGHTS
@@ -1325,7 +1281,7 @@
         superflea: () => {
           // Ensure avatar exists even if ./assets/ is missing
           ensurePlayerModelReady();
-          VIEW_MODE = (VIEW_MODE === 'third') ? 'first' : 'third';
+          cameraSystem.toggleViewMode();
         },
         gettingold: () => {
           SUN_ARC_DURATION_S = (SUN_ARC_DURATION_S === SUN_ARC_DURATION_FAST_S)
@@ -2196,7 +2152,7 @@
       const z = THREE.MathUtils.clamp(monsterSpawn.z, -halfH + 1, halfH - 1);
       const y = Math.max(heightAtWorld(x, z), SEA_LEVEL);
       monsterRoot.position.set(x, y, z);
-      monsterRoot.rotation.set(0, yaw + Math.PI * 0.25, 0);
+      monsterRoot.rotation.set(0, cameraSystem.yaw + Math.PI * 0.25, 0);
       monsterTarget.copy(monsterRoot.position);
       monsterPickTimer = 0.25;
     }
@@ -2475,8 +2431,8 @@
 
       // re-lock pointer (R is usually a user gesture)
       const c = document.getElementById('c');
-      if (c && CAN_LOCK && !document.pointerLockElement) {
-        try { c.requestPointerLock(); } catch { }
+      if (c && !document.pointerLockElement) {
+        cameraSystem.relockPointer();
       }
     }
 
@@ -2658,7 +2614,7 @@
       // -------------------------
       // Movement basis
       // -------------------------
-      if (VIEW_MODE === 'third') {
+      if (cameraSystem.viewMode === 'third') {
         // Third-person: move relative to camera facing projected on XZ
         camera.getWorldDirection(forwardV);
         forwardV.y = 0;
@@ -2669,7 +2625,7 @@
         rightV.crossVectors(forwardV, UP).normalize();
       } else {
         // First-person: classic FPS forward (Three.js forward at yaw=0 is -Z)
-        forwardV.set(-Math.sin(yaw), 0, -Math.cos(yaw)).normalize();
+        forwardV.set(-Math.sin(cameraSystem.yaw), 0, -Math.cos(cameraSystem.yaw)).normalize();
 
         // ✅ right = forward × up  (fixes A/D)
         rightV.crossVectors(forwardV, UP).normalize();
@@ -2685,13 +2641,13 @@
         const upInput = (keys.has('Space') ? 1 : 0) - ((keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyC')) ? 1 : 0);
         const flySpeed = sprint ? NOCLIP_SPRINT_SPEED : NOCLIP_SPEED;
 
-        if (VIEW_MODE === 'third') {
+        if (cameraSystem.viewMode === 'third') {
           camera.getWorldDirection(noclipForwardV);
         } else {
           noclipForwardV.set(
-            -Math.sin(yaw) * Math.cos(pitch),
-            Math.sin(pitch),
-            -Math.cos(yaw) * Math.cos(pitch)
+            -Math.sin(cameraSystem.yaw) * Math.cos(cameraSystem.pitch),
+            Math.sin(cameraSystem.pitch),
+            -Math.cos(cameraSystem.yaw) * Math.cos(cameraSystem.pitch)
           );
         }
         if (noclipForwardV.lengthSq() < 1e-8) noclipForwardV.set(0, 0, -1);
@@ -2902,18 +2858,10 @@
     /* =========================
        CAMERA + HERO SYNC
     ========================= */
-    const camPos = new THREE.Vector3();
-    const camTarget = new THREE.Vector3();
-    const desiredCam = new THREE.Vector3();
-    const boomStart = new THREE.Vector3();
-    const boomEnd = new THREE.Vector3();
-    const tmpRayDir = new THREE.Vector3();
-
     function updatePlayerModelAndCamera(dt) {
       // Always guarantee avatar exists (even if assets fail, or toggled later)
       ensurePlayerModelReady();
 
-      applyCameraRotation();
 
       const sprint = keys.has('ShiftLeft') || keys.has('ShiftRight');
       const moving = (keys.has('KeyW') || keys.has('KeyA') || keys.has('KeyS') || keys.has('KeyD'));
@@ -2932,67 +2880,22 @@
         const ang = Math.atan2(wish.x, wish.z);
         playerRoot.rotation.set(0, ang, 0);
       } else {
-        playerRoot.rotation.set(0, yaw, 0);
+        playerRoot.rotation.set(0, cameraSystem.yaw, 0);
       }
 
       // player model visibility: hide in first-person so she doesn't block view
-      setPlayerModelVisible(VIEW_MODE === 'third');
+      setPlayerModelVisible(cameraSystem.viewMode === 'third');
 
       // Update mixers (safe even when null)
       if (playerIdleMixer && playerIdle && playerIdle.visible) playerIdleMixer.update(dt);
       if (playerWalkMixer && playerWalk && playerWalk.visible) playerWalkMixer.update(dt);
       if (playerRunMixer && playerRun && playerRun.visible) playerRunMixer.update(dt);
 
-      if (VIEW_MODE === 'first') {
-        // First-person camera at player eye
-        camera.position.set(playerPos.x, playerPos.y, playerPos.z);
-        return;
-      }
-
-      // Third-person follow camera
-      // Look-at target
-      camTarget.set(
-        playerPos.x,
-        noclipEnabled ? playerPos.y - PLAYER_EYE_HEIGHT + THIRD_LOOK_UP : heightAtWorld(playerPos.x, playerPos.z) + THIRD_LOOK_UP,
-        playerPos.z
-      );
-
-      const back = THIRD_CAM_BACK;
-      const pitchLift = Math.sin(pitch) * 0.4 * PLAYER_SCALE;
-      const up = THIRD_CAM_UP + pitchLift;
-
-      boomStart.set(playerPos.x, camTarget.y, playerPos.z);
-
-      // desired camera position (behind player based on yaw)
-      boomEnd.set(
-        playerPos.x - Math.sin(yaw) * back,
-        (noclipEnabled ? playerPos.y - PLAYER_EYE_HEIGHT + up : heightAtWorld(playerPos.x, playerPos.z) + up),
-        playerPos.z - Math.cos(yaw) * back
-      );
-      desiredCam.copy(boomEnd);
-
-      // If the boom endpoint intersects terrain, move the camera along the boom
-      // toward the player instead of lifting it and stealing the look-up angle.
-      if (!noclipEnabled) {
-        const camGroundPadding = 0.65;
-        const endGround = heightAtWorld(desiredCam.x, desiredCam.z) + camGroundPadding;
-        if (desiredCam.y < endGround) {
-          let lo = 0;
-          let hi = 1;
-          for (let i = 0; i < 8; i++) {
-            const t = (lo + hi) * 0.5;
-            desiredCam.lerpVectors(boomStart, boomEnd, t);
-            const groundY = heightAtWorld(desiredCam.x, desiredCam.z) + camGroundPadding;
-            if (desiredCam.y < groundY) hi = t;
-            else lo = t;
-          }
-          desiredCam.lerpVectors(boomStart, boomEnd, lo);
-        }
-      }
-
-      // Smooth camera
-      camera.position.lerp(desiredCam, 1.0 - Math.pow(0.000001, dt));
-      camera.lookAt(camTarget);
+      cameraSystem.updateFollowCamera({
+        dt,
+        playerPos,
+        noclipEnabled
+      });
     }
 
     /* =========================
@@ -3048,7 +2951,7 @@
         deathLockoutT = Math.max(0, deathLockoutT - dt);
         updateDeath(dt);
       } else {
-        if (isLocked) {
+        if (cameraSystem.isLocked) {
           updatePlayer(dt);
         }
       }
