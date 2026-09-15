@@ -581,6 +581,7 @@
     import { setupDevConsole } from './src/dev/console.js';
     import { createFollowCameraSystem } from './src/camera/followCamera.js';
     import { createMonsterSystem } from './src/actors/monster.js';
+    import { createPlayerAvatarSystem } from './src/actors/player.js';
     import { createColliderSystem } from './src/physics/colliders.js';
     import {
       TOON_RAMP_SKY_WATER,
@@ -621,11 +622,12 @@
       - src/physics/colliders.js owns spatial hash, capsule collisions, and character separation.
       - src/camera/followCamera.js owns first-person/third-person camera behavior and pointer lock.
       - src/actors/monster.js owns Muffin Man loading, wandering, animation, and player separation.
+      - src/actors/player.js owns player avatar loading, fallback prism, visibility, and animation.
 
       Future low-risk extractions:
 
       Future gameplay extractions:
-      - src/actors/player.js for movement, jump/gravity, death hazards, and avatar animation.
+      - src/actors/player.js for movement, jump/gravity, and death hazards.
 
       Future world/engine extractions:
 
@@ -1281,7 +1283,7 @@
       commands: {
         superflea: () => {
           // Ensure avatar exists even if ./assets/ is missing
-          ensurePlayerModelReady();
+          playerAvatarSystem.ensureReady();
           cameraSystem.toggleViewMode();
         },
         gettingold: () => {
@@ -1305,7 +1307,7 @@
         },
         player: () => {
           OBSCURE_PLAYER_MODEL = !OBSCURE_PLAYER_MODEL;
-          loadPlayerModel();
+          playerAvatarSystem.loadModel();
           console.info('[cheat] player model', OBSCURE_PLAYER_MODEL ? 'obscured' : 'visible');
         },
       }
@@ -1894,112 +1896,11 @@
       }
     }
 
-    // Player-sized black prism stand-in
-    const PLAYER_MODEL_FALLBACK_SCALE = 0.03;
-
-    function removeObjectTree(root) {
-      if (!root) return;
-      root.parent?.remove(root);
-      root.traverse((obj) => {
-        if (obj.geometry) obj.geometry.dispose();
-        if (obj.material) {
-          const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
-          for (const mat of materials) mat.dispose();
-        }
-      });
-    }
-
-    function clearPlayerModel() {
-      removeObjectTree(playerIdle);
-      removeObjectTree(playerWalk);
-      removeObjectTree(playerRun);
-
-      playerIdle = null;
-      playerWalk = null;
-      playerRun = null;
-      playerIdleMixer = null;
-      playerWalkMixer = null;
-      playerRunMixer = null;
-      playerIdleAction = null;
-      playerWalkAction = null;
-      playerRunAction = null;
-      playerFallbackBuilt = false;
-    }
-
-    function makeFallbackPlayerPrism() {
-      const bodyH = (PLAYER_CAPSULE_H + (PLAYER_RADIUS * 2.0));
-      const bodyW = (PLAYER_RADIUS * 2.0) * 1.05;
-      const bodyD = (PLAYER_RADIUS * 2.0) * 0.85;
-
-      const geo = new THREE.BoxGeometry(bodyW, bodyH, bodyD);
-      const mat = makeCharacterToonPhongMaterial(0x000000);
-
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.castShadow = false;
-      mesh.receiveShadow = false;
-      mesh.position.y = bodyH * 0.5;
-
-      const g = new THREE.Group();
-      g.add(mesh);
-      g.scale.setScalar(PLAYER_MODEL_FALLBACK_SCALE);
-      return g;
-    }
-
-    let playerFallbackBuilt = false;
-    function ensurePlayerModelReady() {
-      if (playerWalk || playerRun || playerIdle || playerFallbackBuilt) return;
-
-      playerIdle = makeFallbackPlayerPrism();
-      playerWalk = makeFallbackPlayerPrism();
-      playerRun = makeFallbackPlayerPrism();
-
-      // Default state: idle
-      playerIdle.visible = true;
-      playerWalk.visible = false;
-      playerRun.visible = false;
-
-      playerRoot.add(playerIdle);
-      playerRoot.add(playerWalk);
-      playerRoot.add(playerRun);
-
-      playerIdleMixer = null;
-      playerWalkMixer = null;
-      playerRunMixer = null;
-      playerIdleAction = null;
-      playerWalkAction = null;
-      playerRunAction = null;
-
-      playerFallbackBuilt = true;
-    }
-
-    function useFallbackPlayerModel() {
-      clearPlayerModel();
-      ensurePlayerModelReady();
-      playerCharacterRadius = measuredCharacterRadius(
-        playerIdle || playerWalk || playerRun,
-        PLAYER_CHARACTER_RADIUS_DEFAULT
-      );
-    }
-
     /* =========================
        PLAYER AND MONSTER MODELS
     ========================= */
-    const playerRoot = new THREE.Group();
-    scene.add(playerRoot);
-
-    let playerWalk = null;
-    let playerRun = null;
-    let playerIdle = null;
-    let playerWalkMixer = null;
-    let playerRunMixer = null;
-    let playerIdleMixer = null;
-    let playerWalkAction = null;
-    let playerRunAction = null;
-    let playerIdleAction = null;
-
     const loader = new GLTFLoader();
 
-    let playerCharacterRadius = PLAYER_CHARACTER_RADIUS_DEFAULT;
     const characterMeasureBox = new THREE.Box3();
     const characterMeasureSize = new THREE.Vector3();
 
@@ -2026,6 +1927,23 @@
       });
     }
 
+    const playerAvatarSystem = createPlayerAvatarSystem({
+      scene,
+      loader,
+      idleUrl: PLAYER_IDLE_GLB,
+      walkUrl: PLAYER_WALK_GLB,
+      runUrl: PLAYER_RUN_GLB,
+      defaultCharacterRadius: PLAYER_CHARACTER_RADIUS_DEFAULT,
+      playerCapsuleH: PLAYER_CAPSULE_H,
+      playerRadius: PLAYER_RADIUS,
+      safeLoad,
+      applyCharacterShading,
+      measuredCharacterRadius,
+      makeCharacterToonPhongMaterial,
+      getObscurePlayerModel: () => OBSCURE_PLAYER_MODEL
+    });
+    const playerRoot = playerAvatarSystem.root;
+
     const monsterSystem = createMonsterSystem({
       scene,
       loader,
@@ -2038,7 +1956,7 @@
       measuredCharacterRadius,
       getSpawnRegion: () => oldRootSpawnRegion,
       getPlayerPos: () => playerPos,
-      getPlayerCharacterRadius: () => playerCharacterRadius,
+      getPlayerCharacterRadius: () => playerAvatarSystem.characterRadius,
       getCameraYaw: () => cameraSystem.yaw,
       getWorldBounds: () => ({ halfW, halfH }),
       getSeaLevel: () => SEA_LEVEL,
@@ -2046,135 +1964,6 @@
       isWaterAtWorld,
       colliderSystem
     });
-
-    async function loadPlayerModel() {
-      if (OBSCURE_PLAYER_MODEL) {
-        useFallbackPlayerModel();
-        return;
-      }
-
-      let nextIdle = null;
-      let nextWalk = null;
-      let nextRun = null;
-      let nextIdleMixer = null;
-      let nextWalkMixer = null;
-      let nextRunMixer = null;
-      let nextIdleAction = null;
-      let nextWalkAction = null;
-      let nextRunAction = null;
-
-      const [gltfIdle, gltfWalk, gltfRun] = await Promise.all([
-        safeLoad('player idle GLB', PLAYER_IDLE_GLB, (u) => loader.loadAsync(u)),
-        safeLoad('player walk GLB', PLAYER_WALK_GLB, (u) => loader.loadAsync(u)),
-        safeLoad('player run GLB', PLAYER_RUN_GLB, (u) => loader.loadAsync(u)),
-      ]);
-
-      // Idle (when not moving)
-      if (gltfIdle && gltfIdle.scene) {
-        nextIdle = gltfIdle.scene;
-        applyCharacterShading(nextIdle);
-        nextIdle.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
-        // Default state is idle
-        nextIdle.visible = true;
-
-        nextIdleMixer = new THREE.AnimationMixer(nextIdle);
-        if (gltfIdle.animations && gltfIdle.animations.length) {
-          nextIdleAction = nextIdleMixer.clipAction(gltfIdle.animations[0]);
-          nextIdleAction.play();
-        }
-      }
-
-      // Walking
-      if (gltfWalk && gltfWalk.scene) {
-        nextWalk = gltfWalk.scene;
-        applyCharacterShading(nextWalk);
-        nextWalk.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
-        // Start hidden until we actually move (or until idle is missing)
-        nextWalk.visible = !nextIdle;
-
-        nextWalkMixer = new THREE.AnimationMixer(nextWalk);
-        if (gltfWalk.animations && gltfWalk.animations.length) {
-          nextWalkAction = nextWalkMixer.clipAction(gltfWalk.animations[0]);
-          nextWalkAction.play();
-        }
-      }
-
-      // Running
-      if (gltfRun && gltfRun.scene) {
-        nextRun = gltfRun.scene;
-        applyCharacterShading(nextRun);
-        nextRun.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
-        nextRun.visible = false;
-
-        nextRunMixer = new THREE.AnimationMixer(nextRun);
-        if (gltfRun.animations && gltfRun.animations.length) {
-          nextRunAction = nextRunMixer.clipAction(gltfRun.animations[0]);
-          nextRunAction.play();
-        }
-      }
-
-      if (OBSCURE_PLAYER_MODEL) {
-        removeObjectTree(nextIdle);
-        removeObjectTree(nextWalk);
-        removeObjectTree(nextRun);
-        return;
-      }
-
-      if (!nextIdle && !nextWalk && !nextRun) {
-        useFallbackPlayerModel();
-        return;
-      }
-
-      clearPlayerModel();
-
-      playerIdle = nextIdle;
-      playerWalk = nextWalk;
-      playerRun = nextRun;
-      playerIdleMixer = nextIdleMixer;
-      playerWalkMixer = nextWalkMixer;
-      playerRunMixer = nextRunMixer;
-      playerIdleAction = nextIdleAction;
-      playerWalkAction = nextWalkAction;
-      playerRunAction = nextRunAction;
-
-      if (playerIdle) playerRoot.add(playerIdle);
-      if (playerWalk) playerRoot.add(playerWalk);
-      if (playerRun) playerRoot.add(playerRun);
-
-      playerCharacterRadius = measuredCharacterRadius(
-        playerIdle || playerWalk || playerRun,
-        PLAYER_CHARACTER_RADIUS_DEFAULT
-      );
-    }
-
-    function setPlayerModelMode(isRunning, moving) {
-      ensurePlayerModelReady();
-      if (!playerWalk || !playerRun) return;
-
-      // If we don't have a dedicated idle model, use walk as idle for now.
-      const hasIdle = !!playerIdle;
-
-      if (!moving) {
-        if (hasIdle) {
-          playerIdle.visible = true;
-          playerWalk.visible = false;
-          playerRun.visible = false;
-        } else {
-          playerWalk.visible = true;
-          playerRun.visible = false;
-        }
-        return;
-      }
-
-      // Moving
-      if (hasIdle) playerIdle.visible = false;
-      playerWalk.visible = !isRunning;
-      playerRun.visible = isRunning;
-    }
-
-    function setPlayerModelVisible(vis) {
-      playerRoot.visible = vis;
-    }
 
     /* =========================
        PLAYER SPAWN
@@ -2469,7 +2258,7 @@
       })();
 
       await loadLevel();
-      await loadPlayerModel();
+      await playerAvatarSystem.loadModel();
 
       // IMPORTANT: don’t say “ready” until the level and cutscene assets are hot.
       // Monster assets are large, so they keep loading in the background.
@@ -2628,7 +2417,7 @@
         playerPos.z = THREE.MathUtils.clamp(playerPos.z, -halfH + 1, halfH - 1);
 
         const supported = colliderSystem.resolvePlayerCollisions(playerPos);
-        monsterSystem.resolvePlayerCollision(playerPos, playerCharacterRadius);
+        monsterSystem.resolvePlayerCollision(playerPos, playerAvatarSystem.characterRadius);
 
         if (supported) supportedByCollider = true;
 
@@ -2752,14 +2541,14 @@
     ========================= */
     function updatePlayerModelAndCamera(dt) {
       // Always guarantee avatar exists (even if assets fail, or toggled later)
-      ensurePlayerModelReady();
+      playerAvatarSystem.ensureReady();
 
 
       const sprint = keys.has('ShiftLeft') || keys.has('ShiftRight');
       const moving = (keys.has('KeyW') || keys.has('KeyA') || keys.has('KeyS') || keys.has('KeyD'));
 
       // Switch models: walking GLB for idle+walk, running GLB for sprint+move
-      setPlayerModelMode(sprint && moving, moving);
+      playerAvatarSystem.setMode(sprint && moving, moving);
 
       // player model follows the capsule feet so jump is visible (not locked to terrain height)
       const footY = playerPos.y - PLAYER_EYE_HEIGHT;
@@ -2776,12 +2565,10 @@
       }
 
       // player model visibility: hide in first-person so she doesn't block view
-      setPlayerModelVisible(cameraSystem.viewMode === 'third');
+      playerAvatarSystem.setVisible(cameraSystem.viewMode === 'third');
 
       // Update mixers (safe even when null)
-      if (playerIdleMixer && playerIdle && playerIdle.visible) playerIdleMixer.update(dt);
-      if (playerWalkMixer && playerWalk && playerWalk.visible) playerWalkMixer.update(dt);
-      if (playerRunMixer && playerRun && playerRun.visible) playerRunMixer.update(dt);
+      playerAvatarSystem.updateMixers(dt);
 
       cameraSystem.updateFollowCamera({
         dt,
@@ -2860,7 +2647,7 @@
     window.__mfResetWorld = async () => {
       // If you want a “true reload”, you’re already doing the expensive rebuild here:
       await loadLevel();
-      await loadPlayerModel();
+      await playerAvatarSystem.loadModel();
       await monsterSystem.loadModel();
       monsterSystem.placeNextToPlayer();
       monsterSystem.pickTarget();
