@@ -580,6 +580,7 @@
     } from './src/audio/footsteps.js';
     import { setupDevConsole } from './src/dev/console.js';
     import { createFollowCameraSystem } from './src/camera/followCamera.js';
+    import { createMonsterSystem } from './src/actors/monster.js';
     import { createColliderSystem } from './src/physics/colliders.js';
     import {
       TOON_RAMP_SKY_WATER,
@@ -619,11 +620,11 @@
       - src/world/trees.js owns tree extraction, Douglas fir instancing, and tree colliders.
       - src/physics/colliders.js owns spatial hash, capsule collisions, and character separation.
       - src/camera/followCamera.js owns first-person/third-person camera behavior and pointer lock.
+      - src/actors/monster.js owns Muffin Man loading, wandering, animation, and player separation.
 
       Future low-risk extractions:
 
       Future gameplay extractions:
-      - src/actors/monster.js for Muffin Man loading, wandering, and later medicine-attractor behavior.
       - src/actors/player.js for movement, jump/gravity, death hazards, and avatar animation.
 
       Future world/engine extractions:
@@ -1998,30 +1999,9 @@
 
     const loader = new GLTFLoader();
 
-    const monsterRoot = new THREE.Group();
-    scene.add(monsterRoot);
-    let monsterIdle = null;
-    let monsterWalk = null;
-    let monsterIdleMixer = null;
-    let monsterWalkMixer = null;
-    let monsterIdleAction = null;
-    let monsterWalkAction = null;
-    let monsterLoaded = false;
-    const monsterTarget = new THREE.Vector3();
-    const monsterDir = new THREE.Vector3();
-    let monsterPickTimer = 0;
-    let monsterRandState = 0x51f15e;
     let playerCharacterRadius = PLAYER_CHARACTER_RADIUS_DEFAULT;
-    let monsterCharacterRadius = MONSTER_CHARACTER_RADIUS_DEFAULT;
     const characterMeasureBox = new THREE.Box3();
     const characterMeasureSize = new THREE.Vector3();
-
-    function monsterRand() {
-      monsterRandState += 0x6D2B79F5;
-      let x = Math.imul(monsterRandState ^ (monsterRandState >>> 15), 1 | monsterRandState);
-      x ^= x + Math.imul(x ^ (x >>> 7), 61 | x);
-      return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
-    }
 
     function measuredCharacterRadius(root, fallbackRadius) {
       if (!root) return fallbackRadius;
@@ -2045,6 +2025,27 @@
         o.material = mat;
       });
     }
+
+    const monsterSystem = createMonsterSystem({
+      scene,
+      loader,
+      idleUrl: MONSTER_IDLE_GLB,
+      walkUrl: MONSTER_WALK_GLB,
+      bodyRadius: MONSTER_BODY_RADIUS,
+      defaultCharacterRadius: MONSTER_CHARACTER_RADIUS_DEFAULT,
+      safeLoad,
+      applyCharacterShading,
+      measuredCharacterRadius,
+      getSpawnRegion: () => oldRootSpawnRegion,
+      getPlayerPos: () => playerPos,
+      getPlayerCharacterRadius: () => playerCharacterRadius,
+      getCameraYaw: () => cameraSystem.yaw,
+      getWorldBounds: () => ({ halfW, halfH }),
+      getSeaLevel: () => SEA_LEVEL,
+      heightAtWorld,
+      isWaterAtWorld,
+      colliderSystem
+    });
 
     async function loadPlayerModel() {
       if (OBSCURE_PLAYER_MODEL) {
@@ -2144,115 +2145,6 @@
         playerIdle || playerWalk || playerRun,
         PLAYER_CHARACTER_RADIUS_DEFAULT
       );
-    }
-
-    function placeMonsterNextToPlayer() {
-      const monsterSpawn = oldRootSpawnRegion?.monster || { x: playerPos.x + 5.5, z: playerPos.z + 4.0 };
-      const x = THREE.MathUtils.clamp(monsterSpawn.x, -halfW + 1, halfW - 1);
-      const z = THREE.MathUtils.clamp(monsterSpawn.z, -halfH + 1, halfH - 1);
-      const y = Math.max(heightAtWorld(x, z), SEA_LEVEL);
-      monsterRoot.position.set(x, y, z);
-      monsterRoot.rotation.set(0, cameraSystem.yaw + Math.PI * 0.25, 0);
-      monsterTarget.copy(monsterRoot.position);
-      monsterPickTimer = 0.25;
-    }
-
-    function pickMonsterTarget() {
-      for (let attempt = 0; attempt < 10; attempt++) {
-        const angle = monsterRand() * Math.PI * 2;
-        const radius = THREE.MathUtils.lerp(7.0, 26.0, monsterRand());
-        const x = THREE.MathUtils.clamp(playerPos.x + Math.cos(angle) * radius, -halfW + 1, halfW - 1);
-        const z = THREE.MathUtils.clamp(playerPos.z + Math.sin(angle) * radius, -halfH + 1, halfH - 1);
-        if (!isWaterAtWorld(x, z)) {
-          monsterTarget.set(x, Math.max(heightAtWorld(x, z), SEA_LEVEL), z);
-          monsterPickTimer = THREE.MathUtils.lerp(3.0, 7.0, monsterRand());
-          return;
-        }
-      }
-      monsterTarget.copy(monsterRoot.position);
-      monsterPickTimer = 2.0;
-    }
-
-    function setMonsterWalking(walking) {
-      if (monsterIdle) monsterIdle.visible = !walking;
-      if (monsterWalk) monsterWalk.visible = walking;
-    }
-
-    async function loadMonsterModel() {
-      if (monsterLoaded) return;
-      monsterLoaded = true;
-
-      const gltfIdle = await safeLoad('monster idle GLB', MONSTER_IDLE_GLB, (u) => loader.loadAsync(u));
-      if (gltfIdle && gltfIdle.scene) {
-        monsterIdle = gltfIdle.scene;
-        applyCharacterShading(monsterIdle);
-        monsterIdle.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
-        monsterIdle.visible = false;
-        monsterRoot.add(monsterIdle);
-        monsterIdleMixer = new THREE.AnimationMixer(monsterIdle);
-        if (gltfIdle.animations && gltfIdle.animations.length) {
-          monsterIdleAction = monsterIdleMixer.clipAction(gltfIdle.animations[0]);
-          monsterIdleAction.play();
-        }
-      }
-
-      const gltfWalk = await safeLoad('monster walking GLB', MONSTER_WALK_GLB, (u) => loader.loadAsync(u));
-      if (gltfWalk && gltfWalk.scene) {
-        monsterWalk = gltfWalk.scene;
-        applyCharacterShading(monsterWalk);
-        monsterWalk.traverse(o => { if (o.isMesh) { o.castShadow = false; o.receiveShadow = false; } });
-        monsterWalk.visible = true;
-        monsterRoot.add(monsterWalk);
-        monsterWalkMixer = new THREE.AnimationMixer(monsterWalk);
-        if (gltfWalk.animations && gltfWalk.animations.length) {
-          monsterWalkAction = monsterWalkMixer.clipAction(gltfWalk.animations[0]);
-          monsterWalkAction.play();
-        }
-      }
-
-      monsterRoot.visible = !!(monsterIdle || monsterWalk);
-      monsterCharacterRadius = measuredCharacterRadius(
-        monsterIdle || monsterWalk,
-        MONSTER_CHARACTER_RADIUS_DEFAULT
-      );
-      placeMonsterNextToPlayer();
-      pickMonsterTarget();
-    }
-
-    function updateMonster(dt) {
-      if (!monsterRoot.visible) return;
-
-      monsterPickTimer -= dt;
-      const dx = monsterTarget.x - monsterRoot.position.x;
-      const dz = monsterTarget.z - monsterRoot.position.z;
-      const dist = Math.hypot(dx, dz);
-      if (dist < 0.35 || monsterPickTimer <= 0) pickMonsterTarget();
-
-      const tx = monsterTarget.x - monsterRoot.position.x;
-      const tz = monsterTarget.z - monsterRoot.position.z;
-      const d = Math.hypot(tx, tz);
-      const walking = d > 0.45;
-      setMonsterWalking(walking);
-
-      if (walking) {
-        monsterDir.set(tx / d, 0, tz / d);
-        const step = Math.min(d, 2.4 * dt);
-        monsterRoot.position.x += monsterDir.x * step;
-        monsterRoot.position.z += monsterDir.z * step;
-        if (colliderSystem.resolveTreeCircleCollisions(monsterRoot.position, MONSTER_BODY_RADIUS)) {
-          monsterPickTimer = Math.min(monsterPickTimer, 0.35);
-        }
-        if (colliderSystem.resolvePlayerMonsterCollision({ monsterRoot, playerPos, playerCharacterRadius, monsterCharacterRadius })) {
-          monsterPickTimer = Math.min(monsterPickTimer, 0.45);
-        }
-        monsterRoot.position.x = THREE.MathUtils.clamp(monsterRoot.position.x, -halfW + 1, halfW - 1);
-        monsterRoot.position.z = THREE.MathUtils.clamp(monsterRoot.position.z, -halfH + 1, halfH - 1);
-        monsterRoot.position.y = Math.max(heightAtWorld(monsterRoot.position.x, monsterRoot.position.z), SEA_LEVEL);
-        monsterRoot.rotation.y = Math.atan2(monsterDir.x, monsterDir.z);
-      }
-
-      if (monsterIdleMixer && monsterIdle && monsterIdle.visible) monsterIdleMixer.update(dt);
-      if (monsterWalkMixer && monsterWalk && monsterWalk.visible) monsterWalkMixer.update(dt);
     }
 
     function setPlayerModelMode(isRunning, moving) {
@@ -2426,8 +2318,8 @@
       // optional: clamp to ground in case terrain moved
       const groundY = Math.max(heightAtWorld(playerPos.x, playerPos.z), SEA_LEVEL) + PLAYER_EYE_HEIGHT;
       playerPos.y = groundY;
-      placeMonsterNextToPlayer();
-      pickMonsterTarget();
+      monsterSystem.placeNextToPlayer();
+      monsterSystem.pickTarget();
 
       // re-lock pointer (R is usually a user gesture)
       const c = document.getElementById('c');
@@ -2589,7 +2481,7 @@
       window.__mfWorldReady = true;
       window.dispatchEvent(new Event('mf:world-ready'));
       setTimeout(() => {
-        loadMonsterModel().catch((err) => {
+        monsterSystem.loadModel().catch((err) => {
           console.warn('[monster] background load failed:', err);
         });
       }, 0);
@@ -2736,7 +2628,7 @@
         playerPos.z = THREE.MathUtils.clamp(playerPos.z, -halfH + 1, halfH - 1);
 
         const supported = colliderSystem.resolvePlayerCollisions(playerPos);
-        colliderSystem.resolvePlayerMonsterCollision({ monsterRoot, playerPos, playerCharacterRadius, monsterCharacterRadius });
+        monsterSystem.resolvePlayerCollision(playerPos, playerCharacterRadius);
 
         if (supported) supportedByCollider = true;
 
@@ -2956,7 +2848,7 @@
         }
       }
 
-	      updateMonster(dt);
+	      monsterSystem.update(dt);
 	      updatePlayerModelAndCamera(dt);
 	      updateSkyCloudRings(dt);
 	      updateShorelineMist(dt);
@@ -2969,9 +2861,9 @@
       // If you want a “true reload”, you’re already doing the expensive rebuild here:
       await loadLevel();
       await loadPlayerModel();
-      await loadMonsterModel();
-      placeMonsterNextToPlayer();
-      pickMonsterTarget();
+      await monsterSystem.loadModel();
+      monsterSystem.placeNextToPlayer();
+      monsterSystem.pickTarget();
 
       // If your world has any other runtime state to reset, do it here
       vel.set(0, 0, 0);
