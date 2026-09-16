@@ -27,8 +27,8 @@ export function createFollowCameraSystem({
   const boomStart = new THREE.Vector3();
   const boomEnd = new THREE.Vector3();
 
-  function applyRotation() {
-    camera.rotation.set(pitch, yaw, 0, 'YXZ');
+  function applyRotation(rotationYaw = yaw) {
+    camera.rotation.set(pitch, rotationYaw, 0, 'YXZ');
   }
 
   function enablePointerLock() {
@@ -54,7 +54,8 @@ export function createFollowCameraSystem({
   document.addEventListener('mousemove', (e) => {
     if (!isLocked) return;
     yaw -= e.movementX * mouseSens;
-    pitch += e.movementY * mouseSens;
+    const pitchDirection = viewMode === 'first' ? -1 : 1;
+    pitch += e.movementY * mouseSens * pitchDirection;
     pitch = THREE.MathUtils.clamp(pitch, pitchMin, pitchMax);
   });
 
@@ -63,17 +64,25 @@ export function createFollowCameraSystem({
     return viewMode;
   }
 
+  function setViewMode(mode) {
+    if (mode !== 'first' && mode !== 'third') return viewMode;
+    viewMode = mode;
+    return viewMode;
+  }
+
   function updateFollowCamera({
     dt,
     playerPos,
+    firstPersonEyeY,
     noclipEnabled
   }) {
-    applyRotation();
-
     if (viewMode === 'first') {
-      camera.position.set(playerPos.x, playerPos.y, playerPos.z);
+      applyRotation(yaw + Math.PI);
+      camera.position.set(playerPos.x, firstPersonEyeY, playerPos.z);
       return;
     }
+
+    applyRotation();
 
     camTarget.set(
       playerPos.x,
@@ -117,6 +126,7 @@ export function createFollowCameraSystem({
     enablePointerLock,
     relockPointer,
     toggleViewMode,
+    setViewMode,
     updateFollowCamera,
     get isLocked() {
       return isLocked;

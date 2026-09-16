@@ -21,5 +21,7 @@ __pycache__/
 *.tmp
 # Keep large/private raw assets out of version control.
 assets/*
+!assets/ui/
+!assets/ui/hand.png
+!assets/ui/mushroom.png
 *.glb
-

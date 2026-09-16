@@ -75,6 +75,104 @@
       font-size: 12px;
     }
 
+    #psionicHud {
+      --psionic-level: 0%;
+      --psionic-threshold: 72%;
+      position: fixed;
+      top: 18px;
+      right: 18px;
+      z-index: 40;
+      width: min(300px, calc(100vw - 36px));
+      color: rgba(218, 255, 250, .88);
+      font: 11px/1 "Orbitron", system-ui, sans-serif;
+      pointer-events: none;
+      user-select: none;
+    }
+
+    #psionicHud .psionicMeta {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 7px;
+    }
+
+    #psionicHud .psionicTrack {
+      position: relative;
+      height: 13px;
+      overflow: visible;
+      border: 1px solid rgba(117, 228, 219, .55);
+      background: rgba(0, 12, 18, .68);
+      box-shadow: 0 0 12px rgba(35, 185, 197, .14);
+    }
+
+    #psionicFill {
+      width: 0;
+      height: 100%;
+      background: linear-gradient(90deg, #147f83, #36d4be 68%, #a8fff0);
+      box-shadow: 0 0 12px rgba(72, 255, 226, .35);
+      transition: width 120ms linear;
+    }
+
+    #psionicHud .psionicThreshold {
+      position: absolute;
+      left: var(--psionic-threshold);
+      top: -5px;
+      width: 2px;
+      height: 23px;
+      background: #eefec9;
+      box-shadow: 0 0 7px rgba(238, 254, 201, .8);
+    }
+
+    #psionicHud.is-critical .psionicTrack {
+      border-color: rgba(221, 255, 157, .9);
+      animation: psionicWarning 760ms ease-in-out infinite alternate;
+    }
+
+    #regulationView {
+      --hand-left: clamp(35px, 10vw, 130px);
+      position: fixed;
+      inset: 0;
+      z-index: 35;
+      display: none;
+      pointer-events: none;
+      overflow: hidden;
+    }
+
+    #psionicHud.is-regulating + #regulationView {
+      display: block;
+    }
+
+    #regulationHand,
+    #regulationMushroom {
+      position: absolute;
+      display: block;
+      height: auto;
+      max-width: none;
+      will-change: transform;
+    }
+
+    #regulationHand {
+      width: min(470px, 58vw);
+      left: var(--hand-left);
+      bottom: -22px;
+    }
+
+    #regulationMushroom {
+      width: min(270px, 34vw);
+      left: calc(var(--hand-left) + min(110px, 15vw));
+      bottom: min(250px, 28vh);
+      animation: mushroomHover 1.25s ease-in-out infinite alternate;
+    }
+
+    @keyframes mushroomHover {
+      from { transform: translateY(0); }
+      to { transform: translateY(-18px); }
+    }
+
+    @keyframes psionicWarning {
+      from { box-shadow: 0 0 10px rgba(141, 255, 197, .22); }
+      to { box-shadow: 0 0 19px rgba(205, 255, 133, .62); }
+    }
+
     :root {
       --mega-pink: #E60C9A;
     }
@@ -532,7 +630,18 @@
     }
   </style>
   <script src="./src/ui/cutscenes/megaFutureIntro.js"></script>
-  <div id="hint">Click to lock • WASD move • Shift sprint • Space jump</div>
+  <div id="hint">Click to lock • WASD move • Shift sprint • Space jump • R regulate</div>
+  <div id="psionicHud" role="meter" aria-label="Psionic criticality" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+    <div class="psionicMeta"><span>PSIONIC CRITICALITY</span><span><span id="psionicValue">0</span>%</span></div>
+    <div class="psionicTrack">
+      <div id="psionicFill"></div>
+      <div class="psionicThreshold" aria-hidden="true"></div>
+    </div>
+  </div>
+  <div id="regulationView" aria-hidden="true">
+    <img id="regulationHand" src="./assets/ui/hand.png?v=3" alt="" />
+    <img id="regulationMushroom" src="./assets/ui/mushroom.png?v=3" alt="" />
+  </div>
   <div id="devConsole">
     <div class="row">
       <div class="prompt">&gt;</div>
@@ -582,6 +691,7 @@
     import { createFollowCameraSystem } from './src/camera/followCamera.js';
     import { createMonsterSystem } from './src/actors/monster.js';
     import { createPlayerAvatarSystem } from './src/actors/player.js';
+    import { createPsionicSystem } from './src/player/psionics.js';
     import { createColliderSystem } from './src/physics/colliders.js';
     import {
       TOON_RAMP_SKY_WATER,
@@ -623,6 +733,7 @@
       - src/camera/followCamera.js owns first-person/third-person camera behavior and pointer lock.
       - src/actors/monster.js owns Muffin Man loading, wandering, animation, and player separation.
       - src/actors/player.js owns player avatar loading, fallback prism, visibility, and animation.
+      - src/player/psionics.js owns criticality, regulation timing, slowdown, and psionic HUD state.
 
       Future low-risk extractions:
 
@@ -649,6 +760,7 @@
     const PLAYER_IDLE_GLB = './assets/player/idle.glb';
     const MONSTER_IDLE_GLB = './assets/monster/idle.glb';
     const MONSTER_WALK_GLB = './assets/monster/walking.glb';
+    const MONSTER_RUN_GLB = './assets/monster/running.glb';
     let OBSCURE_PLAYER_MODEL = true;
 
     let footTimer = 0;
@@ -1284,7 +1396,7 @@
         superflea: () => {
           // Ensure avatar exists even if ./assets/ is missing
           playerAvatarSystem.ensureReady();
-          cameraSystem.toggleViewMode();
+          if (!psionicSystem.isRegulating) cameraSystem.toggleViewMode();
         },
         gettingold: () => {
           SUN_ARC_DURATION_S = (SUN_ARC_DURATION_S === SUN_ARC_DURATION_FAST_S)
@@ -1310,16 +1422,20 @@
           playerAvatarSystem.loadModel();
           console.info('[cheat] player model', OBSCURE_PLAYER_MODEL ? 'obscured' : 'visible');
         },
+        critical: () => psionicSystem.setCriticality(0.74),
       }
     });
 
     addEventListener('keydown', (e) => {
-      if (!deathActive) return;
-      if (e.code === 'KeyR') {
-        e.preventDefault();
-        e.stopPropagation();
+      if (e.code !== 'KeyR') return;
+      if (e.repeat) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (deathActive) {
         if (deathLockoutT <= 0) respawn();
+        return;
       }
+      psionicSystem.toggleRegulation();
     }, { capture: true });
 
     let jumpBufferT = 0;
@@ -1946,9 +2062,11 @@
 
     const monsterSystem = createMonsterSystem({
       scene,
+      camera,
       loader,
       idleUrl: MONSTER_IDLE_GLB,
       walkUrl: MONSTER_WALK_GLB,
+      runUrl: MONSTER_RUN_GLB,
       bodyRadius: MONSTER_BODY_RADIUS,
       defaultCharacterRadius: MONSTER_CHARACTER_RADIUS_DEFAULT,
       safeLoad,
@@ -1963,7 +2081,16 @@
       getSeaLevel: () => SEA_LEVEL,
       heightAtWorld,
       isWaterAtWorld,
+      getSightOccluders: () => terrainMesh ? [terrainMesh] : [],
       colliderSystem
+    });
+
+    const psionicSystem = createPsionicSystem({
+      rootEl: document.getElementById('psionicHud'),
+      fillEl: document.getElementById('psionicFill'),
+      valueEl: document.getElementById('psionicValue'),
+      cameraSystem,
+      monsterSystem
     });
 
     /* =========================
@@ -2071,6 +2198,7 @@
 
     function triggerDeath(cause) {
       if (deathActive) return;
+      psionicSystem.cancelRegulation();
       deathActive = true;
       deathCause = cause || 'drown';
 
@@ -2110,6 +2238,7 @@
       playerPos.y = groundY;
       monsterSystem.placeNextToPlayer();
       monsterSystem.pickTarget();
+      psionicSystem.reset();
 
       // re-lock pointer (R is usually a user gesture)
       const c = document.getElementById('c');
@@ -2238,12 +2367,16 @@
     }
 
     const CUTSCENE_IMAGES = [];
+    const REGULATION_IMAGES = [
+      './assets/ui/hand.png?v=3',
+      './assets/ui/mushroom.png?v=3'
+    ];
 
     try {
       // Start prewarming ASAP (in parallel)
       const prewarmPromise = (async () => {
         // images (decode too)
-        const p1 = window.__mfMemAssets?.prewarmImages(CUTSCENE_IMAGES, {
+        const p1 = window.__mfMemAssets?.prewarmImages([...CUTSCENE_IMAGES, ...REGULATION_IMAGES], {
           concurrency: 2,
           onProgress: (done, total, url) => {
             const loaderEl = document.getElementById("loader");
@@ -2288,7 +2421,8 @@
 
       const f = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0);
       const s = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0);
-      const sprint = keys.has('ShiftLeft') || keys.has('ShiftRight');
+      const sprint = !psionicSystem.isRegulating && (keys.has('ShiftLeft') || keys.has('ShiftRight'));
+      const psionicSpeed = psionicSystem.speedMultiplier;
 
       // Reuse a single UP vector (no per-frame allocations)
       const UP = (updatePlayer._UP ||= new THREE.Vector3(0, 1, 0));
@@ -2307,7 +2441,7 @@
         rightV.crossVectors(forwardV, UP).normalize();
       } else {
         // First-person: classic FPS forward (Three.js forward at yaw=0 is -Z)
-        forwardV.set(-Math.sin(cameraSystem.yaw), 0, -Math.cos(cameraSystem.yaw)).normalize();
+        forwardV.set(Math.sin(cameraSystem.yaw), 0, Math.cos(cameraSystem.yaw)).normalize();
 
         // ✅ right = forward × up  (fixes A/D)
         rightV.crossVectors(forwardV, UP).normalize();
@@ -2321,7 +2455,7 @@
 
       if (noclipEnabled) {
         const upInput = (keys.has('Space') ? 1 : 0) - ((keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyC')) ? 1 : 0);
-        const flySpeed = sprint ? NOCLIP_SPRINT_SPEED : NOCLIP_SPEED;
+        const flySpeed = (sprint ? NOCLIP_SPRINT_SPEED : NOCLIP_SPEED) * psionicSpeed;
 
         if (cameraSystem.viewMode === 'third') {
           camera.getWorldDirection(noclipForwardV);
@@ -2374,11 +2508,11 @@
       if (grounded) {
         const baseSpd = sprint ? SPEED_SPRINT : SPEED_WALK;
         const slopeMul = slopeSpeedMultiplierAt(playerPos.x, playerPos.z, wish);
-        const spd = baseSpd * slopeMul;
+        const spd = baseSpd * slopeMul * psionicSpeed;
         vel.x = wish.x * spd;
         vel.z = wish.z * spd;
       } else {
-        const maxSpd = sprint ? AIR_MAX_SPEED_SPRINT : AIR_MAX_SPEED_WALK;
+        const maxSpd = (sprint ? AIR_MAX_SPEED_SPRINT : AIR_MAX_SPEED_WALK) * psionicSpeed;
         const targetX = wish.x * maxSpd;
         const targetZ = wish.z * maxSpd;
 
@@ -2545,7 +2679,7 @@
       playerAvatarSystem.ensureReady();
 
 
-      const sprint = keys.has('ShiftLeft') || keys.has('ShiftRight');
+      const sprint = !psionicSystem.isRegulating && (keys.has('ShiftLeft') || keys.has('ShiftRight'));
       const moving = (keys.has('KeyW') || keys.has('KeyA') || keys.has('KeyS') || keys.has('KeyD'));
 
       // Switch models: walking GLB for idle+walk, running GLB for sprint+move
@@ -2574,6 +2708,7 @@
       cameraSystem.updateFollowCamera({
         dt,
         playerPos,
+        firstPersonEyeY: footY + BASE_EYE_HEIGHT,
         noclipEnabled
       });
     }
@@ -2604,6 +2739,8 @@
       lastRenderTime = now;
 
       const dt = Math.min(clock.getDelta(), 0.05);
+
+      psionicSystem.update(dt, cameraSystem.isLocked && !deathActive);
 
 	      sun.position.set(MOON_X, MOON_Y, MOON_Z);
 	      sun.target.position.set(0, 0, 0);
@@ -2652,6 +2789,7 @@
       await monsterSystem.loadModel();
       monsterSystem.placeNextToPlayer();
       monsterSystem.pickTarget();
+      psionicSystem.reset();
 
       // If your world has any other runtime state to reset, do it here
       vel.set(0, 0, 0);
@@ -2663,6 +2801,12 @@
     // Optional: give the cutscene a way to clear held keys
     window.__mfClearKeys = () => {
       keys.clear();
+    };
+
+    // Hand/mushroom interaction will call this while the luminous mushroom is exposed.
+    window.__mfSetMushroomLure = (active) => {
+      if (active) monsterSystem.beginMushroomAmbush();
+      else monsterSystem.setMushroomLureActive(false);
     };
   </script>
   <!--<audio id="mfMusic" src="audio/megafuture_1.mp3" preload="auto" loop></audio>-->
