@@ -10,6 +10,7 @@ export function createMonsterSystem({
   safeLoad,
   applyCharacterShading,
   measuredCharacterRadius,
+  makeCharacterToonPhongMaterial,
   getSpawnRegion,
   getPlayerPos,
   getPlayerCharacterRadius,
@@ -29,6 +30,7 @@ export function createMonsterSystem({
   let walkMixer = null;
   let idleAction = null;
   let walkAction = null;
+  let fallback = null;
   let loaded = false;
   let characterRadius = defaultCharacterRadius;
   let pickTimer = 0;
@@ -36,6 +38,32 @@ export function createMonsterSystem({
 
   const target = new THREE.Vector3();
   const dir = new THREE.Vector3();
+
+  function makeFallbackPrism() {
+    const bodyH = 2.2;
+    const bodyW = Math.max(0.45, defaultCharacterRadius * 1.35);
+    const bodyD = Math.max(0.38, defaultCharacterRadius * 1.0);
+
+    const geo = new THREE.BoxGeometry(bodyW, bodyH, bodyD);
+    const mat = makeCharacterToonPhongMaterial(0x121212);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    mesh.position.y = bodyH * 0.5;
+
+    const group = new THREE.Group();
+    group.add(mesh);
+    return group;
+  }
+
+  function useFallbackModel() {
+    if (fallback) return;
+    fallback = makeFallbackPrism();
+    idle = fallback;
+    walk = fallback;
+    root.add(fallback);
+    characterRadius = measuredCharacterRadius(fallback, defaultCharacterRadius);
+  }
 
   function rand() {
     randState += 0x6D2B79F5;
@@ -80,6 +108,10 @@ export function createMonsterSystem({
   }
 
   function setWalking(walking) {
+    if (idle && idle === walk) {
+      idle.visible = true;
+      return;
+    }
     if (idle) idle.visible = !walking;
     if (walk) walk.visible = walking;
   }
@@ -116,7 +148,11 @@ export function createMonsterSystem({
       }
     }
 
-    root.visible = !!(idle || walk);
+    if (!idle && !walk) {
+      useFallbackModel();
+    }
+
+    root.visible = !!(idle || walk || fallback);
     characterRadius = measuredCharacterRadius(idle || walk, defaultCharacterRadius);
     placeNextToPlayer();
     pickTarget();
