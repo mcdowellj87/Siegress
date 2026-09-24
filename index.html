@@ -700,14 +700,10 @@
       characterSunUniforms,
       makeCharacterToonPhongMaterial
     } from './src/render/materials.js';
-    import {
-      OLD_ROOT_SITE_X,
-      OLD_ROOT_SITE_Z,
-      TEMP_SPAWN_ON_OLD_ROOT_ISLAND,
-      createOldRootSiteSystem
-    } from './src/world/oldRootSite.js';
+    import { createOldRootSiteSystem } from './src/world/oldRootSite.js';
     import { createSeawallSystem } from './src/world/seawall.js';
     import { createSkyAnomalySystem } from './src/world/skyAnomalies.js';
+    import { createSpireSystem } from './src/world/spire.js';
     import { createWaterMonsterSystem } from './src/world/waterMonster.js';
     import {
       buildTerrainMesh as buildTerrainMeshObject,
@@ -732,6 +728,7 @@
       - src/world/terrain.js owns height derivation and terrain mesh construction.
       - src/world/water.js owns sea plane and shoreline mist.
       - src/world/skyAnomalies.js owns distant high-strangeness sky events.
+      - src/world/spire.js owns the cyan-marker spire and its pulsing beacon.
       - src/world/waterMonster.js owns the pond's billboarded water monster.
       - src/world/trees.js owns tree extraction, Douglas fir instancing, and tree colliders.
       - src/physics/colliders.js owns spatial hash, capsule collisions, and character separation.
@@ -893,6 +890,10 @@
     function isTreePixel(r, g, b, a) {
       if (a < 16) return false;
       return near([r, g, b], COLORS.TREE);
+    }
+    function isPlayerSpawnPixel(r, g, b, a) {
+      if (a < 16) return false;
+      return near([r, g, b], COLORS.PLAYER);
     }
     function isHousePixel(r, g, b, a) {
       return false;
@@ -1675,6 +1676,13 @@
       isFirefox: IS_FIREFOX
     });
 
+    const spireSystem = createSpireSystem({
+      levelRoot,
+      colliders,
+      getMetrics: () => ({ mapW, mapH, cell, halfW, halfH, seaLevel: SEA_LEVEL }),
+      heightAtWorld
+    });
+
     /* =========================
        BUILDINGS (PERIMETER EXTRUDE)
     ========================= */
@@ -2093,7 +2101,7 @@
       applyCharacterShading,
       measuredCharacterRadius,
       makeCharacterToonPhongMaterial,
-      getSpawnRegion: () => oldRootSpawnRegion,
+      getSpawnRegion: () => characterSpawnRegion,
       getPlayerPos: () => playerPos,
       getPlayerCharacterRadius: () => playerAvatarSystem.characterRadius,
       getCameraYaw: () => cameraSystem.yaw,
@@ -2116,35 +2124,29 @@
     /* =========================
        PLAYER SPAWN
     ========================= */
-    let oldRootSpawnRegion = null;
+    let characterSpawnRegion = null;
 
-    function findPlayerSpawn(data) {
-      for (let y = 0; y < mapH; y++) {
-        for (let x = 0; x < mapW; x++) {
-          const p = (y * mapW + x) * 4;
-          const r = data[p], g = data[p + 1], b = data[p + 2], a = data[p + 3];
-          if (a < 16) continue;
-          if (near([r, g, b], COLORS.PLAYER)) {
-            return { x: x * cell - halfW + cell * 0.5, z: y * cell - halfH + cell * 0.5 };
-          }
-        }
-      }
-      return { x: 0, z: 0 };
-    }
-
-    function findOldRootSpawnRegion(data) {
+    function findMarkerRegion(data, isMarkerPixel) {
       const points = [];
       let sumX = 0;
       let sumY = 0;
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
 
       for (let y = 0; y < mapH; y++) {
         for (let x = 0; x < mapW; x++) {
           const p = idx(x, y) * 4;
           const r = data[p], g = data[p + 1], b = data[p + 2], a = data[p + 3];
-          if (!isOldRootSpawnPixel(r, g, b, a)) continue;
+          if (!isMarkerPixel(r, g, b, a)) continue;
           points.push({ x, y });
           sumX += x;
           sumY += y;
+          minX = Math.min(minX, x);
+          maxX = Math.max(maxX, x);
+          minY = Math.min(minY, y);
+          maxY = Math.max(maxY, y);
         }
       }
 
@@ -2167,6 +2169,9 @@
       const player = mapPixelToWorld2(cx, cy);
       const monster = mapPixelToWorld2(monsterPixel.x, monsterPixel.y);
       return {
+        cx,
+        cy,
+        diamPx: Math.max(1, Math.hypot(maxX - minX + 1, maxY - minY + 1)),
         player: { x: player.x, z: player.y },
         monster: { x: monster.x, z: monster.y }
       };
@@ -2347,8 +2352,8 @@
       const dataForHeights = new Uint8ClampedArray(data);
 
       // Marker/object extraction should use original pixels; height derivation mutates channels.
-      const sp = findPlayerSpawn(dataOriginal);
-      oldRootSpawnRegion = findOldRootSpawnRegion(dataOriginal);
+      characterSpawnRegion = findMarkerRegion(dataOriginal, isPlayerSpawnPixel);
+      const spireMarker = findMarkerRegion(dataOriginal, isOldRootSpawnPixel);
 
       const derived = deriveHeightsAndWater(dataForHeights);
       heights = derived.heights;
@@ -2362,6 +2367,7 @@
 
       const blobs = treeSystem.collectBlobsFromBitmap(dataOriginal);
       treeSystem.buildInstancesFromBlobs(blobs);
+      spireSystem.build(spireMarker);
 
       buildBuildingPerimeterFromBitmap(dataOriginal);
 
@@ -2372,9 +2378,7 @@
 
       colliderSystem.rebuildGrid();
 
-      const spawnTarget = oldRootSpawnRegion?.player || (TEMP_SPAWN_ON_OLD_ROOT_ISLAND
-        ? findNearestDrySpawn(OLD_ROOT_SITE_X, OLD_ROOT_SITE_Z - 430)
-        : sp);
+      const spawnTarget = characterSpawnRegion?.player || findNearestDrySpawn(0, 0);
       const py = Math.max(heightAtWorld(spawnTarget.x, spawnTarget.z), SEA_LEVEL) + PLAYER_EYE_HEIGHT;
       playerPos.set(spawnTarget.x, py, spawnTarget.z);
 
@@ -2798,6 +2802,7 @@
 	      updatePlayerModelAndCamera(dt);
 	      updateSkyCloudRings(dt);
 	      skyAnomalySystem.update(dt);
+	      spireSystem.update(dt);
 	      waterMonsterSystem.update();
 	      updateShorelineMist(dt);
 

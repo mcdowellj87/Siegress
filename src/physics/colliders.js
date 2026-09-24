@@ -233,7 +233,7 @@ export function createColliderSystem({
 
     for (const id of ids) {
       const c = colliders[id];
-      if (!c || c.tag !== 'tree-trunk') continue;
+      if (!c || (c.tag !== 'tree-trunk' && c.tag !== 'spire')) continue;
 
       const cx = c.a.x;
       const cz = c.a.z;

@@ -2,6 +2,36 @@ import * as THREE from 'three';
 import { mergeGeometries } from '../../utils/BufferGeometryUtils.js';
 
 export const FIR_TRUNK_COLLIDER_BUFFER = 0.08;
+export const FIR_HEIGHT = 42.0;
+export const FIR_TRUNK_RADIUS_BASE = 0.6;
+export const FIR_TRUNK_RADIUS_TOP = 0.06;
+export const FIR_TRUNK_COLLIDER_RADIUS_MUL = 1.0;
+export const FIR_TRUNK_COLLIDER_HEIGHT_MUL = 0.82;
+export const FIR_TEMPLATE_SCALE = 1.2;
+
+const FIR_TRUNK_RADIAL_SEGMENTS = 5;
+const FIR_TRUNK_HEIGHT_SEGMENTS = 8;
+
+export function getFirScaleForDiameter(diamPx) {
+  const sizeMul = THREE.MathUtils.clamp(0.70 + diamPx * 0.03, 0.70, 2.20);
+  return FIR_TEMPLATE_SCALE * sizeMul;
+}
+
+export function createFirTrunkGeometry() {
+  const trunk = new THREE.CylinderGeometry(1, 1, FIR_HEIGHT, FIR_TRUNK_RADIAL_SEGMENTS, FIR_TRUNK_HEIGHT_SEGMENTS, false);
+  const trunkPos = trunk.attributes.position;
+  for (let i = 0; i < trunkPos.count; i++) {
+    const x = trunkPos.getX(i);
+    const y = trunkPos.getY(i);
+    const z = trunkPos.getZ(i);
+    const zf = THREE.MathUtils.clamp((y + FIR_HEIGHT * 0.5) / FIR_HEIGHT, 0, 1);
+    const r = FIR_TRUNK_RADIUS_TOP + (FIR_TRUNK_RADIUS_BASE - FIR_TRUNK_RADIUS_TOP) * Math.pow(1 - zf, 2.0);
+    trunkPos.setXYZ(i, x * r, y, z * r);
+  }
+  trunkPos.needsUpdate = true;
+  trunk.computeVertexNormals();
+  return trunk;
+}
 
 export function createTreeSystem({
   levelRoot,
@@ -18,13 +48,6 @@ export function createTreeSystem({
   /* =========================
      TREES (PROCEDURAL DOUGLAS FIR)
   ========================= */
-  const FIR_HEIGHT = 42.0;
-  const FIR_TRUNK_RADIUS_BASE = 0.6;
-  const FIR_TRUNK_RADIUS_TOP = 0.06;
-  const FIR_TRUNK_COLLIDER_RADIUS_MUL = 1.0;
-  const FIR_TRUNK_COLLIDER_HEIGHT_MUL = 0.82;
-  const FIR_TRUNK_RADIAL_SEGMENTS = 5;
-  const FIR_TRUNK_HEIGHT_SEGMENTS = 8;
   const FIR_BRANCH_START = 0.35;
   const FIR_WHORLS = 18;
   const FIR_BRANCH_SEGMENTS = 6;
@@ -47,7 +70,6 @@ export function createTreeSystem({
   const FIR_MID_BRANCH_DOWN_RAD = THREE.MathUtils.degToRad(FIR_MID_BRANCH_DOWN_DEG);
   const FIR_TOP_BRANCH_DOWN_DEG = 15;
   const FIR_TOP_BRANCH_DOWN_RAD = THREE.MathUtils.degToRad(FIR_TOP_BRANCH_DOWN_DEG);
-  const FIR_TEMPLATE_SCALE = 1.2;
   const FIR_BRANCH_SPRIG_START_T = 0.03;
   const FIR_BRANCH_SPRIG_STEP_T = 0.03;
   const FIR_BRANCH_SPRIG_OVERLAP = 0.20;
@@ -204,19 +226,7 @@ export function createTreeSystem({
 
     const parts = [];
 
-    const trunk = new THREE.CylinderGeometry(1, 1, FIR_HEIGHT, FIR_TRUNK_RADIAL_SEGMENTS, FIR_TRUNK_HEIGHT_SEGMENTS, false);
-    const trunkPos = trunk.attributes.position;
-    for (let i = 0; i < trunkPos.count; i++) {
-      const x = trunkPos.getX(i);
-      const y = trunkPos.getY(i);
-      const z = trunkPos.getZ(i);
-      const zf = THREE.MathUtils.clamp((y + FIR_HEIGHT * 0.5) / FIR_HEIGHT, 0, 1);
-      const r = FIR_TRUNK_RADIUS_TOP + (FIR_TRUNK_RADIUS_BASE - FIR_TRUNK_RADIUS_TOP) * Math.pow(1 - zf, 2.0);
-      trunkPos.setXYZ(i, x * r, y, z * r);
-    }
-    trunkPos.needsUpdate = true;
-    trunk.computeVertexNormals();
-    parts.push(trunk);
+    parts.push(createFirTrunkGeometry());
 
     const rng = makeSeededRng(44);
     const gravity = new THREE.Vector3(0, -1, 0);
@@ -573,8 +583,7 @@ export function createTreeSystem({
       const wx = blob.cx * cell - halfW + cell * 0.5;
       const wz = blob.cy * cell - halfH + cell * 0.5;
       const baseY = Math.max(heightAtWorld(wx, wz), seaLevel);
-      const sizeMul = THREE.MathUtils.clamp(0.70 + blob.diamPx * 0.03, 0.70, 2.20);
-      const scale = FIR_TEMPLATE_SCALE * sizeMul;
+      const scale = getFirScaleForDiameter(blob.diamPx);
       const hNoise = (Math.sin((i + 1) * 12.9898 + blob.cx * 78.233 + blob.cy * 37.719) * 43758.5453) % 1;
       const hRand = hNoise < 0 ? hNoise + 1 : hNoise;
       const heightMul = THREE.MathUtils.lerp(0.25, 2.0, hRand);
