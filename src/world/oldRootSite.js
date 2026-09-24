@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { findWaterMonsterSpawnMarker } from './waterMonster.js';
 
 export const OLD_ROOT_SITE_X = 770;
 export const OLD_ROOT_SITE_Z = 790;
@@ -72,10 +73,14 @@ function collectOldRootWallPointsFromBitmap(data, metrics) {
   const { mapW, mapH, cell, halfW, halfH } = metrics;
   const idx = (x, y) => y * mapW + x;
   const mapPixelToWorld2 = (x, y) => new THREE.Vector2(x * cell - halfW + cell * 0.5, y * cell - halfH + cell * 0.5);
+  const waterMonsterMarker = findWaterMonsterSpawnMarker(data, mapW, mapH);
   const points = [];
 
   for (let y = 0; y < mapH; y += OLD_ROOT_WALL_SAMPLE_STEP) {
     for (let x = 0; x < mapW; x += OLD_ROOT_WALL_SAMPLE_STEP) {
+      if (waterMonsterMarker &&
+          x >= waterMonsterMarker.minX && x <= waterMonsterMarker.maxX &&
+          y >= waterMonsterMarker.minY && y <= waterMonsterMarker.maxY) continue;
       const p = idx(x, y) * 4;
       if (!isOldRootWallPixel(data[p], data[p + 1], data[p + 2], data[p + 3])) continue;
       const world = mapPixelToWorld2(x, y);

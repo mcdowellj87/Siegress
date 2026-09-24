@@ -41,7 +41,7 @@ export function createWaterSystem({
     geo.rotateX(-Math.PI / 2);
 
     const mat = new THREE.MeshBasicMaterial({
-      color: 0x343a78,
+      color: 0x00132d,
       fog: true,
       transparent: false,
       depthWrite: true,

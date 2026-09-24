@@ -706,6 +706,8 @@
       createOldRootSiteSystem
     } from './src/world/oldRootSite.js';
     import { createSeawallSystem } from './src/world/seawall.js';
+    import { createSkyAnomalySystem } from './src/world/skyAnomalies.js';
+    import { createWaterMonsterSystem } from './src/world/waterMonster.js';
     import {
       buildTerrainMesh as buildTerrainMeshObject,
       deriveTerrainData,
@@ -728,6 +730,8 @@
       - src/world/oldRootSite.js owns old-root-site image layout and reserve checks.
       - src/world/terrain.js owns height derivation and terrain mesh construction.
       - src/world/water.js owns sea plane and shoreline mist.
+      - src/world/skyAnomalies.js owns distant high-strangeness sky events.
+      - src/world/waterMonster.js owns the pond's billboarded water monster.
       - src/world/trees.js owns tree extraction, Douglas fir instancing, and tree colliders.
       - src/physics/colliders.js owns spatial hash, capsule collisions, and character separation.
       - src/camera/followCamera.js owns first-person/third-person camera behavior and pointer lock.
@@ -859,6 +863,7 @@
       PLAYER: rgb('#0000ff'),
       BORDER: rgb('#ffff00'),
       FUSION_REACTOR_SPAWN: rgb('#FF0000'),
+      WATER_MONSTER_SPAWN: rgb('#ff00ff'),
       OLD_ROOT_SPAWN: rgb('#00fffd')
     };
 
@@ -881,6 +886,7 @@
       return near([r, g, b], COLORS.TREE) ||
         near([r, g, b], COLORS.PLAYER) ||
         near([r, g, b], COLORS.FUSION_REACTOR_SPAWN) ||
+        near([r, g, b], COLORS.WATER_MONSTER_SPAWN) ||
         isOldRootSpawnPixel(r, g, b, 255);
     }
     function isTreePixel(r, g, b, a) {
@@ -1371,6 +1377,11 @@
       }
     }
 
+    const skyAnomalySystem = createSkyAnomalySystem({
+      scene,
+      skyRadius: SKY_RADIUS
+    });
+
     /* =========================
        INPUT
     ========================= */
@@ -1422,6 +1433,7 @@
           playerAvatarSystem.loadModel();
           console.info('[cheat] player model', OBSCURE_PLAYER_MODEL ? 'obscured' : 'visible');
         },
+        ufo: () => skyAnomalySystem.spawn(),
         critical: () => psionicSystem.setCriticality(0.74),
       }
     });
@@ -1584,6 +1596,13 @@
       waterPlaneSize: WATER_PLANE_SIZE,
       getState: () => ({ mapW, mapH, cell, halfW, halfH, heights, waterMask, seaLevel: SEA_LEVEL }),
       isSubmergedGrid
+    });
+
+    const waterMonsterSystem = createWaterMonsterSystem({
+      levelRoot,
+      getMetrics: () => ({ mapW, mapH, cell, halfW, halfH, seaLevel: SEA_LEVEL }),
+      getPlayerPosition: () => playerPos,
+      playerHeight: PLAYER_CAPSULE_H + PLAYER_RADIUS * 2.0
     });
 
     function buildWorldSeaPlane() {
@@ -2338,6 +2357,7 @@
 
       buildTerrainMesh();
       buildWorldSeaPlane();
+      await waterMonsterSystem.build(dataOriginal);
 
       const blobs = treeSystem.collectBlobsFromBitmap(dataOriginal);
       treeSystem.buildInstancesFromBlobs(blobs);
@@ -2776,6 +2796,8 @@
 	      monsterSystem.update(dt);
 	      updatePlayerModelAndCamera(dt);
 	      updateSkyCloudRings(dt);
+	      skyAnomalySystem.update(dt);
+	      waterMonsterSystem.update();
 	      updateShorelineMist(dt);
 
 	      renderer.render(scene, camera);
