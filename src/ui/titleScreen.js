@@ -15,83 +15,6 @@
     img.style.animationDelay = `${delay}s`;
   });
 
-  const titleCanvas = document.getElementById('mfTitleCanvas');
-  let rafId = 0;
-
-  if (titleCanvas) {
-    const ctx = titleCanvas.getContext('2d');
-    const W = 2048;
-    const H = 512;
-    titleCanvas.width = W;
-    titleCanvas.height = H;
-
-    const text = 'SIEGRESS';
-    const fontFamily = 'Oxanium';
-    const fontWeight = 400;
-    const scaleX = 1.0;
-    const scaleY = 0.5;
-    const tracking = 22;
-    const fontSize = 190;
-
-    function drawTrackedText(mode = 'fill') {
-      const chars = text.split('');
-      let total = 0;
-      for (const ch of chars) total += ctx.measureText(ch).width;
-      total += tracking * (chars.length - 1);
-      let x = -total * 0.5;
-      for (const ch of chars) {
-        if (mode === 'stroke') ctx.strokeText(ch, x, 0);
-        else ctx.fillText(ch, x, 0);
-        x += ctx.measureText(ch).width + tracking;
-      }
-    }
-
-    function drawTitle(t) {
-      const time = t * 0.001;
-      const pulse = 0.5 + 0.5 * Math.sin(time * 0.8);
-      const blueStrength = Math.abs(pulse * 2.0 - 1.0);
-
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.clearRect(0, 0, W, H);
-
-      ctx.save();
-      ctx.translate(W * 0.5, H * 0.5);
-      ctx.scale(scaleX, scaleY);
-      ctx.font = `${fontWeight} ${fontSize}px ${fontFamily}, sans-serif`;
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-
-      ctx.save();
-      ctx.fillStyle = `rgba(58, 215, 255, ${0.18 + 0.7 * blueStrength})`;
-      ctx.shadowColor = 'rgba(58, 215, 255, 0.95)';
-      ctx.shadowBlur = 55 + 80 * blueStrength;
-      ctx.lineWidth = 16;
-      ctx.strokeStyle = `rgba(58, 215, 255, ${0.65 + 0.25 * blueStrength})`;
-      drawTrackedText('stroke');
-      ctx.restore();
-
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
-      drawTrackedText('fill');
-
-      ctx.fillStyle = `rgba(255, 255, 255, ${0.08 + 0.18 * blueStrength})`;
-      ctx.shadowColor = 'rgba(255, 255, 255, 0.6)';
-      ctx.shadowBlur = 10 + 20 * blueStrength;
-      ctx.lineWidth = 6;
-      ctx.strokeStyle = `rgba(255, 255, 255, ${0.25 + 0.35 * blueStrength})`;
-      drawTrackedText('stroke');
-
-      ctx.restore();
-
-      rafId = requestAnimationFrame(drawTitle);
-    }
-
-    if (document.fonts && document.fonts.ready) {
-      document.fonts.ready.then(() => { rafId = requestAnimationFrame(drawTitle); });
-    } else {
-      rafId = requestAnimationFrame(drawTitle);
-    }
-  }
-
   const loaderEl = document.getElementById('loader');
   let dots = 1;
   const loaderInterval = loaderEl ? setInterval(() => {
@@ -178,7 +101,6 @@
   }
 
   function closeModal() {
-    if (rafId) cancelAnimationFrame(rafId);
     if (loaderInterval) clearInterval(loaderInterval);
     window.removeEventListener('contextmenu', blockCtxMenu, true);
 
