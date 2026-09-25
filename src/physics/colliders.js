@@ -130,8 +130,13 @@ export function createColliderSystem({
 
   let lastSupportTag = '';
 
-  function resolvePlayerCollisions(pos) {
-    const { playerRadius } = getPlayerCapsuleConfig();
+  function resolvePlayerCollisions(
+    pos,
+    previousPlayerY = pos.y,
+    previousPlayerX = pos.x,
+    previousPlayerZ = pos.z
+  ) {
+    const { playerEyeHeight, playerRadius } = getPlayerCapsuleConfig();
     const treeTrunkColliderBuffer = getTreeTrunkColliderBuffer();
     lastSupportTag = '';   // reset each call
     const cap = getPlayerCapsule(pos);
@@ -139,6 +144,31 @@ export function createColliderSystem({
     const ids = queryNearby(min, max);
 
     let supported = false;
+    let risingFromWallTop = false;
+
+    if (pos.y > previousPlayerY + 1e-4) {
+      const previousFootY = previousPlayerY - playerEyeHeight;
+      for (const id of ids) {
+        const c = colliders[id];
+        if (c.type !== 'wall-seg') continue;
+
+        const vx = c.b.x - c.a.x;
+        const vz = c.b.z - c.a.z;
+        const len2 = vx * vx + vz * vz;
+        const t = len2 > 1e-8
+          ? THREE.MathUtils.clamp(((previousPlayerX - c.a.x) * vx + (previousPlayerZ - c.a.z) * vz) / len2, 0, 1)
+          : 0;
+        const cx = c.a.x + vx * t;
+        const cz = c.a.z + vz * t;
+        const dx = previousPlayerX - cx;
+        const dz = previousPlayerZ - cz;
+        const topY = THREE.MathUtils.lerp(c.topYA ?? c.maxY, c.topYB ?? c.maxY, t);
+        if (dx * dx + dz * dz <= c.halfWidth * c.halfWidth && Math.abs(previousFootY - topY) <= 2.0) {
+          risingFromWallTop = true;
+          break;
+        }
+      }
+    }
 
     for (const id of ids) {
       const c = colliders[id];
@@ -161,6 +191,7 @@ export function createColliderSystem({
         }
 
       } else if (c.type === 'wall-seg') {
+        if (risingFromWallTop) continue;
         const vx = c.b.x - c.a.x;
         const vz = c.b.z - c.a.z;
         const wx = pos.x - c.a.x;
@@ -171,8 +202,52 @@ export function createColliderSystem({
         const cz = c.a.z + vz * t;
         const dx = pos.x - cx;
         const dz = pos.z - cz;
+        const footY = cap.a.y - cap.r;
+        const previousFootY = previousPlayerY - playerEyeHeight;
+        const topY = THREE.MathUtils.lerp(c.topYA ?? c.maxY, c.topYB ?? c.maxY, t);
+        const topRadius = c.halfWidth;
         const rr = c.halfWidth + c.buffer;
         const d2 = dx * dx + dz * dz;
+
+        const previousWx = previousPlayerX - c.a.x;
+        const previousWz = previousPlayerZ - c.a.z;
+        const previousT = len2 > 1e-8
+          ? THREE.MathUtils.clamp((previousWx * vx + previousWz * vz) / len2, 0, 1)
+          : 0;
+        const previousCx = c.a.x + vx * previousT;
+        const previousCz = c.a.z + vz * previousT;
+        const previousDx = previousPlayerX - previousCx;
+        const previousDz = previousPlayerZ - previousCz;
+        const previousTopY = THREE.MathUtils.lerp(c.topYA ?? c.maxY, c.topYB ?? c.maxY, previousT);
+        const wasOnTop =
+          previousDx * previousDx + previousDz * previousDz <= topRadius * topRadius &&
+          Math.abs(previousFootY - previousTopY) <= 2.0;
+
+        const crossedTopFromAbove = previousFootY > topY + 1e-4 && footY <= topY;
+        const restingOnTop = Math.abs(footY - topY) <= 2.0;
+        const onTop = d2 <= topRadius * topRadius;
+        const withinLandingCatch = d2 <= rr * rr;
+        const canLandOnTop =
+          (crossedTopFromAbove && withinLandingCatch) ||
+          (wasOnTop && onTop) ||
+          (restingOnTop && onTop);
+        if (canLandOnTop) {
+          if (!onTop && d2 > 1e-8) {
+            const d = Math.sqrt(d2);
+            const settledRadius = Math.max(0, topRadius - 0.05);
+            pos.x = cx + (dx / d) * settledRadius;
+            pos.z = cz + (dz / d) * settledRadius;
+          }
+          pos.y = topY + playerEyeHeight;
+          supported = true;
+          lastSupportTag = c.tag || '';
+          continue;
+        }
+
+        // At the lip, let the player step or fall off naturally. Applying the
+        // vertical-face push here abruptly throws them away from the wall.
+        if (wasOnTop || (previousFootY >= topY - 0.05 && footY >= topY - 2.0)) continue;
+
         if (d2 >= rr * rr) continue;
 
         let nx = 1;

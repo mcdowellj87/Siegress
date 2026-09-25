@@ -83,10 +83,11 @@ export function createFollowCameraSystem({
     }
 
     applyRotation();
+    const playerFootY = playerPos.y - playerEyeHeight;
 
     camTarget.set(
       playerPos.x,
-      noclipEnabled ? playerPos.y - playerEyeHeight + thirdLookUp : heightAtWorld(playerPos.x, playerPos.z) + thirdLookUp,
+      playerFootY + thirdLookUp,
       playerPos.z
     );
 
@@ -96,7 +97,7 @@ export function createFollowCameraSystem({
     boomStart.set(playerPos.x, camTarget.y, playerPos.z);
     boomEnd.set(
       playerPos.x - Math.sin(yaw) * thirdCamBack,
-      noclipEnabled ? playerPos.y - playerEyeHeight + up : heightAtWorld(playerPos.x, playerPos.z) + up,
+      playerFootY + up,
       playerPos.z - Math.cos(yaw) * thirdCamBack
     );
     desiredCam.copy(boomEnd);

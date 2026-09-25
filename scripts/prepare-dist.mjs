@@ -38,6 +38,7 @@ await copyDirIfPresent(join(root, 'audio'), join(dist, 'audio'));
 await copyDirIfPresent(join(root, 'assets'), join(dist, 'assets'), { skipGlbs: true });
 await rm(join(dist, 'images', '.DS_Store'), { force: true });
 await rm(join(dist, 'images', 'map.xcf'), { force: true });
+await rm(join(dist, 'images', 'map_pre_gravel.png'), { force: true });
 await removeGlbsRecursive(join(dist, 'assets'));
 
 await mkdir(join(dist, 'server'), { recursive: true });

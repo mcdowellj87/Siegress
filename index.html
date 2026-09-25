@@ -731,10 +731,12 @@
       makeCharacterToonPhongMaterial
     } from './src/render/materials.js';
     import { createOldRootSiteSystem } from './src/world/oldRootSite.js';
-    import { createSeawallSystem } from './src/world/seawall.js';
+    import { createMoundSystem } from './src/world/mound.js';
+    import { calculateSeawallHeight, createSeawallSystem } from './src/world/seawall.js';
     import { createSkyAnomalySystem } from './src/world/skyAnomalies.js';
     import { createSpireSystem } from './src/world/spire.js';
     import { createWaterMonsterSystem } from './src/world/waterMonster.js';
+    import { createGravelSystem } from './src/world/gravel.js';
     import {
       buildTerrainMesh as buildTerrainMeshObject,
       deriveTerrainData,
@@ -855,6 +857,9 @@
 
     const PLAYER_RADIUS = 0.38 * PLAYER_SCALE;
     const PLAYER_CAPSULE_H = 1.45 * PLAYER_SCALE;
+    const SEAWALL_HEIGHT = calculateSeawallHeight(PLAYER_CAPSULE_H, PLAYER_RADIUS);
+    const MOUND_HEIGHT = SEAWALL_HEIGHT;
+    const FATAL_FALL_DISTANCE = BASE_EYE_HEIGHT * 5.0;
     const PLAYER_CHARACTER_RADIUS_DEFAULT = 0.55;
     const MONSTER_CHARACTER_RADIUS_DEFAULT = 0.85;
     const CHARACTER_COLLIDER_BUFFER = 0.06;
@@ -902,7 +907,8 @@
       BORDER: rgb('#ffff00'),
       FUSION_REACTOR_SPAWN: rgb('#FF0000'),
       WATER_MONSTER_SPAWN: rgb('#ff00ff'),
-      OLD_ROOT_SPAWN: rgb('#00fffd')
+      OLD_ROOT_SPAWN: rgb('#00fffd'),
+      MOUND: rgb('#ff3a8a')
     };
 
     function rgb(hex) {
@@ -925,11 +931,16 @@
         near([r, g, b], COLORS.PLAYER) ||
         near([r, g, b], COLORS.FUSION_REACTOR_SPAWN) ||
         near([r, g, b], COLORS.WATER_MONSTER_SPAWN) ||
+        isMoundPixel(r, g, b, 255) ||
         isOldRootSpawnPixel(r, g, b, 255);
     }
     function isTreePixel(r, g, b, a) {
       if (a < 16) return false;
       return near([r, g, b], COLORS.TREE);
+    }
+    function isMoundPixel(r, g, b, a) {
+      if (a < 16) return false;
+      return r === COLORS.MOUND[0] && g === COLORS.MOUND[1] && b === COLORS.MOUND[2];
     }
     function isPlayerSpawnPixel(r, g, b, a) {
       if (a < 16) return false;
@@ -1459,6 +1470,7 @@
         glassfloor: () => {
           glassfloorEnabled = !glassfloorEnabled;
           if (terrainMesh) terrainMesh.visible = !glassfloorEnabled;
+          gravelSystem.setVisible(!glassfloorEnabled);
           console.info('[cheat] glassfloor', glassfloorEnabled ? 'enabled' : 'disabled');
         },
         noclip: () => {
@@ -1468,6 +1480,7 @@
           supportedByCollider = false;
           jumpBufferT = 0;
           coyoteT = 0;
+          resetFallTracking();
           console.info('[cheat] noclip', noclipEnabled ? 'enabled' : 'disabled');
         },
         player: () => {
@@ -1500,6 +1513,7 @@
     let mapW = 0, mapH = 0, cell = CELL_M, halfW = 0, halfH = 0;
     let heights = null;
     let waterMask = null;
+    let moundSystem = null;
 
     let MAX_LAND_HEIGHT = 0; // tallest interpreted green (computed at load)
 
@@ -1550,12 +1564,14 @@
 
     function heightAtWorld(wx, wz) {
       if (isWaterAtWorld(wx, wz)) return SEA_LEVEL;
-      return heightAtWorldRaw(wx, wz);
+      const terrainHeight = heightAtWorldRaw(wx, wz);
+      const moundHeight = moundSystem?.surfaceHeightAtWorld(wx, wz) ?? -Infinity;
+      return Math.max(terrainHeight, moundHeight);
     }
 
     function heightForRender(wx, wz) {
       if (isWaterAtWorld(wx, wz)) return FLOOR_Y;
-      return heightAtWorld(wx, wz);
+      return heightAtWorldRaw(wx, wz);
     }
 
     function terrainSlopeAtWorld(wx, wz) {
@@ -1674,6 +1690,25 @@
       halfH = built.halfH;
     }
 
+    const gravelSystem = createGravelSystem({
+      levelRoot,
+      getMetrics: () => ({ mapW, mapH, cell, halfW, halfH }),
+      isWaterAtWorld
+    });
+
+    moundSystem = createMoundSystem({
+      levelRoot,
+      getMetrics: () => ({ mapW, mapH, cell, halfW, halfH }),
+      heightAtWorldRaw,
+      moundHeight: MOUND_HEIGHT,
+      gradientMap: TOON_RAMP_TUNDRA
+    });
+
+    addEventListener('keydown', (event) => {
+      if (event.code !== 'KeyZ' || event.repeat || !cameraSystem.isLocked) return;
+      if (gravelSystem.undoLastStamp()) event.preventDefault();
+    });
+
     /* =========================
        WORLD WATER PLANE
     ========================= */
@@ -1738,8 +1773,7 @@
       colliders,
       getMetrics: () => ({ mapW, mapH, cell, halfW, halfH, seaLevel: SEA_LEVEL }),
       heightAtWorldRaw,
-      floorY: FLOOR_Y,
-      skyRadius: SKY_RADIUS,
+      seawallHeight: SEAWALL_HEIGHT,
       playerCapsuleH: PLAYER_CAPSULE_H,
       playerRadius: PLAYER_RADIUS
     });
@@ -2293,13 +2327,16 @@
     const DEATH_POEMS = {
       drown: `You plummet into the great red sea, you fail to float and twist in unnatural ways as you feel your lungs fill with a familiar iron-tasting viscous fluid.\n\nYou have died.`,
       exposure: `You attempt to flee by mantling up to the sky bridge, and walking across its infinite stretch to a seemingly more distant horizon; you fathom that marching onward for eternity is better than continued torment, but the cold starts to nip at your flesh, your fingers go numb, you shiver uncontrollably, and you eventually die from exposure.`,
-      treefall: `Your clever attempts at breaking down trees to create a raft are thwarted as your feet give way and you tumble to the cold hard snow below.`
+      treefall: `Your clever attempts at breaking down trees to create a raft are thwarted as your feet give way and you tumble to the cold hard snow below.`,
+      fall: `The ground rushes up with terrible certainty. The mountain keeps the shape you leave behind.\n\nYou have died.`
     };
 
     let deathActive = false;
     let deathCause = '';
     let deathSinkTargetEyeY = 0;
     let deathLockoutT = 0;
+    let fallPeakFootY = playerPos.y - PLAYER_EYE_HEIGHT;
+    let wasGroundedForFall = false;
 
     const deathEl = document.getElementById('mfDeath');
     const deathPoemEl = document.getElementById('mfDeathPoem');
@@ -2319,6 +2356,28 @@
       }
     }
 
+    function resetFallTracking() {
+      fallPeakFootY = playerPos.y - PLAYER_EYE_HEIGHT;
+      wasGroundedForFall = grounded;
+    }
+
+    function landedAfterFatalFall(footY, previousFootY) {
+      let fatalLanding = false;
+
+      if (!grounded) {
+        if (wasGroundedForFall) fallPeakFootY = Math.max(fallPeakFootY, previousFootY);
+        else fallPeakFootY = Math.max(fallPeakFootY, footY);
+      } else if (!wasGroundedForFall) {
+        fatalLanding = (fallPeakFootY - footY) >= FATAL_FALL_DISTANCE;
+        fallPeakFootY = footY;
+      } else {
+        fallPeakFootY = footY;
+      }
+
+      wasGroundedForFall = grounded;
+      return fatalLanding;
+    }
+
     function triggerDeath(cause) {
       if (deathActive) return;
       psionicSystem.cancelRegulation();
@@ -2334,6 +2393,7 @@
       grounded = false;
       coyoteT = 0;
       jumpBufferT = 0;
+      resetFallTracking();
 
       showDeathOverlay(DEATH_POEMS[deathCause] || 'You have died.');
     }
@@ -2359,6 +2419,7 @@
       // optional: clamp to ground in case terrain moved
       const groundY = Math.max(heightAtWorld(playerPos.x, playerPos.z), SEA_LEVEL) + PLAYER_EYE_HEIGHT;
       playerPos.y = groundY;
+      resetFallTracking();
       monsterSystem.placeNextToPlayer();
       monsterSystem.pickTarget();
       psionicSystem.reset();
@@ -2464,6 +2525,13 @@
       waterSystem.resetShorelineCache();
 
       buildTerrainMesh();
+      moundSystem.buildFromBitmap(dataOriginal);
+      gravelSystem.initialize({
+        sourceCanvas: c,
+        sourceContext: ctx,
+        sourcePixels: dataOriginal,
+        terrainMesh
+      });
       buildWorldSeaPlane();
       await waterMonsterSystem.build(dataOriginal);
 
@@ -2491,6 +2559,7 @@
       grounded = false;
       coyoteT = 0;
       jumpBufferT = 0;
+      resetFallTracking();
     }
 
     const CUTSCENE_IMAGES = [];
@@ -2545,6 +2614,8 @@
         updateDeath(dt);
         return;
       }
+
+      const footYBeforePhysics = playerPos.y - PLAYER_EYE_HEIGHT;
 
       const f = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0);
       const s = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0);
@@ -2672,6 +2743,7 @@
 
       for (let i = 0; i < steps; i++) {
         const prevX = playerPos.x;
+        const prevY = playerPos.y;
         const prevZ = playerPos.z;
 
         const intendedX = playerPos.x + vel.x * subDt;
@@ -2688,7 +2760,7 @@
         playerPos.x = THREE.MathUtils.clamp(playerPos.x, -halfW + 1, halfW - 1);
         playerPos.z = THREE.MathUtils.clamp(playerPos.z, -halfH + 1, halfH - 1);
 
-        const supported = colliderSystem.resolvePlayerCollisions(playerPos);
+        const supported = colliderSystem.resolvePlayerCollisions(playerPos, prevY, prevX, prevZ);
         monsterSystem.resolvePlayerCollision(playerPos, playerAvatarSystem.characterRadius);
 
         if (supported) supportedByCollider = true;
@@ -2705,11 +2777,16 @@
           grounded = true;
         } else {
           if (grounded && !supportedByCollider && playerPos.y > groundY) {
-            const maxDown = DOWN_FOLLOW_SPEED * subDt;
-            playerPos.y = Math.max(groundY, playerPos.y - maxDown);
-            if (playerPos.y === groundY) {
-              vel.y = Math.max(vel.y, 0);
-              grounded = true;
+            const dropToGround = playerPos.y - groundY;
+            if (dropToGround >= FATAL_FALL_DISTANCE) {
+              grounded = false;
+            } else {
+              const maxDown = DOWN_FOLLOW_SPEED * subDt;
+              playerPos.y = Math.max(groundY, playerPos.y - maxDown);
+              if (playerPos.y === groundY) {
+                vel.y = Math.max(vel.y, 0);
+                grounded = true;
+              }
             }
           }
 
@@ -2743,6 +2820,11 @@
         footY <= SEA_LEVEL + 0.02
       ) {
         triggerDeath('drown');
+        return;
+      }
+
+      if (!deathActive && landedAfterFatalFall(footY, footYBeforePhysics)) {
+        triggerDeath('fall');
         return;
       }
 
@@ -2850,6 +2932,17 @@
       });
     }
 
+    function updateGravelSpray() {
+      const spraying = keys.has('KeyG') && cameraSystem.isLocked && !deathActive && !noclipEnabled && grounded;
+      if (!spraying) {
+        gravelSystem.endStroke();
+        return;
+      }
+
+      const stampSize = Math.max(4.0, playerAvatarSystem.characterRadius * 2.0);
+      gravelSystem.updateStroke(playerPos.x, playerPos.z, stampSize);
+    }
+
     /* =========================
        LOOP
     ========================= */
@@ -2918,6 +3011,7 @@
         }
       }
       updatePlayerSpeedometer(measuredPlayerSpeed, dt, playerSteepSlopePenaltyActive);
+      updateGravelSpray();
 
 	      monsterSystem.update(dt);
 	      updatePlayerModelAndCamera(dt);

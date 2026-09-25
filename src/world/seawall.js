@@ -9,6 +9,10 @@ const SEAWALL_SEGMENT_OVERLAP = SEAWALL_THICKNESS * 1.25;
 const SEAWALL_MIN_PATH_PIXELS = 80;
 const SEAWALL_MIN_EXTENT_PX = 120;
 
+export function calculateSeawallHeight(playerCapsuleH, playerRadius) {
+  return (playerCapsuleH + playerRadius * 2.0) * 0.443;
+}
+
 function isSeawallPathPixel(r, g, b, a) {
   if (a < 16) return false;
   return r >= 190 && g <= 135 && b <= 135 && r >= g + 60 && r >= b + 60;
@@ -163,13 +167,12 @@ export function createSeawallSystem({
   colliders,
   getMetrics,
   heightAtWorldRaw,
-  floorY,
-  skyRadius,
+  seawallHeight,
   playerCapsuleH,
   playerRadius
 }) {
   let seawallGroup = null;
-  const seawallHeight = (playerCapsuleH + playerRadius * 2.0) * 0.443;
+  const resolvedSeawallHeight = seawallHeight ?? calculateSeawallHeight(playerCapsuleH, playerRadius);
 
   function clear() {
     if (!seawallGroup) return;
@@ -218,9 +221,6 @@ export function createSeawallSystem({
 
     const m = new THREE.Matrix4();
     const p = new THREE.Vector3();
-    const s = new THREE.Vector3();
-    const q = new THREE.Quaternion();
-    const e = new THREE.Euler(0, 0, 0, 'YXZ');
     let segmentIndex = 0;
 
     for (const path of paths) {
@@ -234,30 +234,39 @@ export function createSeawallSystem({
 
         const mx = (a.x + b.x) * 0.5;
         const mz = (a.y + b.y) * 0.5;
-        const baseY = Math.max(
-          metrics.seaLevel,
-          heightAtWorldRaw(a.x, a.y),
-          heightAtWorldRaw(mx, mz),
-          heightAtWorldRaw(b.x, b.y)
+        const baseYA = Math.max(metrics.seaLevel, heightAtWorldRaw(a.x, a.y));
+        const baseYB = Math.max(metrics.seaLevel, heightAtWorldRaw(b.x, b.y));
+        const topYA = baseYA + resolvedSeawallHeight;
+        const topYB = baseYB + resolvedSeawallHeight;
+
+        const wallHeight = resolvedSeawallHeight + SEAWALL_EMBED_DEPTH;
+
+        p.set(
+          mx,
+          ((baseYA + baseYB) * 0.5) + (resolvedSeawallHeight * 0.5) - (SEAWALL_EMBED_DEPTH * 0.5),
+          mz
         );
-
-        const wallHeight = seawallHeight + SEAWALL_EMBED_DEPTH;
-
-        p.set(mx, baseY + (seawallHeight * 0.5) - (SEAWALL_EMBED_DEPTH * 0.5), mz);
-        e.set(0, Math.atan2(dx, dz), 0);
-        q.setFromEuler(e);
-        s.set(SEAWALL_THICKNESS, wallHeight, len + SEAWALL_SEGMENT_OVERLAP);
-        m.compose(p, q, s);
+        const sideX = dz / len;
+        const sideZ = -dx / len;
+        const overlapScale = (len + SEAWALL_SEGMENT_OVERLAP) / len;
+        m.set(
+          sideX * SEAWALL_THICKNESS, 0, dx * overlapScale, p.x,
+          0, wallHeight, (baseYB - baseYA) * overlapScale, p.y,
+          sideZ * SEAWALL_THICKNESS, 0, dz * overlapScale, p.z,
+          0, 0, 0, 1
+        );
         mesh.setMatrixAt(segmentIndex++, m);
 
         colliders.push({
           type: 'wall-seg',
-          a: new THREE.Vector3(a.x, baseY, a.y),
-          b: new THREE.Vector3(b.x, baseY, b.y),
+          a: new THREE.Vector3(a.x, baseYA, a.y),
+          b: new THREE.Vector3(b.x, baseYB, b.y),
           halfWidth: SEAWALL_THICKNESS * 0.5,
           buffer: SEAWALL_COLLIDER_BUFFER,
-          minY: floorY,
-          maxY: skyRadius,
+          minY: Math.min(baseYA, baseYB) - SEAWALL_EMBED_DEPTH,
+          maxY: Math.max(topYA, topYB),
+          topYA,
+          topYB,
           tag: 'seawall'
         });
       }
