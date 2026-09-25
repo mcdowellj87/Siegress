@@ -35,6 +35,33 @@
       white-space: pre;
     }
 
+    #playerSpeedometer {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 40;
+      color: rgba(218, 255, 250, .88);
+      font: 11px/1 "Orbitron", system-ui, sans-serif;
+      text-align: right;
+      text-shadow: 0 0 8px rgba(35, 185, 197, .45);
+      pointer-events: none;
+      user-select: none;
+    }
+
+    #playerSpeedValue {
+      display: inline-block;
+      min-width: 4.5ch;
+      margin-left: 7px;
+      font-size: 18px;
+      font-variant-numeric: tabular-nums;
+      transition: color 100ms linear, text-shadow 100ms linear;
+    }
+
+    #playerSpeedometer.is-penalized #playerSpeedValue {
+      color: #ff4d4d;
+      text-shadow: 0 0 9px rgba(255, 48, 48, .7);
+    }
+
     #devConsole {
       position: fixed;
       left: 12px;
@@ -632,6 +659,9 @@
   </style>
   <script src="./src/ui/cutscenes/megaFutureIntro.js"></script>
   <div id="hint">Click to lock • WASD move • Shift sprint • Space jump • R regulate</div>
+  <div id="playerSpeedometer" aria-label="Player speed">
+    PLAYER SPEED <span id="playerSpeedValue">0.0</span> m/s
+  </div>
   <div id="psionicHud" role="meter" aria-label="Psionic criticality" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
     <div class="psionicMeta"><span>PSIONIC CRITICALITY</span><span><span id="psionicValue">0</span>%</span></div>
     <div class="psionicTrack">
@@ -832,6 +862,16 @@
     const MAX_STEP_UP = 0.55 * PLAYER_SCALE;
 
     const SUBSTEP_DIST = 0.35 * PLAYER_SCALE;
+
+    const DEFAULT_MAX_TRAVERSABLE_SLOPE_DEG = 45;
+    const PLAYER_MAX_TRAVERSABLE_SLOPE_DEG = DEFAULT_MAX_TRAVERSABLE_SLOPE_DEG;
+    const MONSTER_MAX_TRAVERSABLE_SLOPE_DEG = DEFAULT_MAX_TRAVERSABLE_SLOPE_DEG;
+    const PLAYER_MAX_TRAVERSABLE_SLOPE = Math.tan(THREE.MathUtils.degToRad(PLAYER_MAX_TRAVERSABLE_SLOPE_DEG));
+    const MONSTER_MAX_TRAVERSABLE_SLOPE = Math.tan(THREE.MathUtils.degToRad(MONSTER_MAX_TRAVERSABLE_SLOPE_DEG));
+    const PLAYER_STEEP_SLOPE_SPEED_MULTIPLIER = 0.25;
+    const MONSTER_STEEP_SLOPE_SPEED_MULTIPLIER = 0.25;
+    const TRAVERSABLE_SLOPE_EPSILON = 1e-6;
+    const TERRAIN_SLOPE_SAMPLE_DIST = CELL_M;
 
     /* =========================
        SLOPE SPEED (GROUND ONLY)
@@ -1518,6 +1558,51 @@
       return heightAtWorld(wx, wz);
     }
 
+    function terrainSlopeAtWorld(wx, wz) {
+      if (!heights) return 0;
+
+      const sampleDist = Math.max(1e-5, TERRAIN_SLOPE_SAMPLE_DIST);
+      const hL = heightAtWorld(wx - sampleDist, wz);
+      const hR = heightAtWorld(wx + sampleDist, wz);
+      const hD = heightAtWorld(wx, wz - sampleDist);
+      const hU = heightAtWorld(wx, wz + sampleDist);
+      const dhdx = (hR - hL) / (sampleDist * 2.0);
+      const dhdz = (hU - hD) / (sampleDist * 2.0);
+
+      return Math.hypot(dhdx, dhdz);
+    }
+
+    function terrainTraversalSpeedMultiplier(fromX, fromZ, toX, toZ, maxSlope, steepSlopeMultiplier) {
+      if (terrainSlopeAtWorld(toX, toZ) <= maxSlope + TRAVERSABLE_SLOPE_EPSILON) return 1.0;
+
+      const fromHeight = heightAtWorld(fromX, fromZ);
+      const toHeight = heightAtWorld(toX, toZ);
+      if (Math.abs(toHeight - fromHeight) > TRAVERSABLE_SLOPE_EPSILON) return steepSlopeMultiplier;
+      return 1.0;
+    }
+
+    function playerTerrainTraversalSpeedMultiplier(fromX, fromZ, toX, toZ) {
+      return terrainTraversalSpeedMultiplier(
+        fromX,
+        fromZ,
+        toX,
+        toZ,
+        PLAYER_MAX_TRAVERSABLE_SLOPE,
+        PLAYER_STEEP_SLOPE_SPEED_MULTIPLIER
+      );
+    }
+
+    function monsterTerrainTraversalSpeedMultiplier(fromX, fromZ, toX, toZ) {
+      return terrainTraversalSpeedMultiplier(
+        fromX,
+        fromZ,
+        toX,
+        toZ,
+        MONSTER_MAX_TRAVERSABLE_SLOPE,
+        MONSTER_STEEP_SLOPE_SPEED_MULTIPLIER
+      );
+    }
+
     function findNearestDrySpawn(targetX, targetZ, maxRadius = 180) {
       if (!heights) return { x: targetX, z: targetZ };
       let best = null;
@@ -2109,6 +2194,7 @@
       getSeaLevel: () => SEA_LEVEL,
       heightAtWorld,
       isWaterAtWorld,
+      terrainTraversalSpeedMultiplier: monsterTerrainTraversalSpeedMultiplier,
       getSightOccluders: () => terrainMesh ? [terrainMesh] : [],
       colliderSystem
     });
@@ -2187,7 +2273,19 @@
     const vel = new THREE.Vector3();
     const playerPos = new THREE.Vector3(0, PLAYER_EYE_HEIGHT, 6);
     const spawnPos = new THREE.Vector3();
+    const playerSpeedometerEl = document.getElementById('playerSpeedometer');
+    const playerSpeedValueEl = document.getElementById('playerSpeedValue');
+    let displayedPlayerSpeed = 0;
+    let playerSteepSlopePenaltyActive = false;
     let noclipEnabled = false;
+
+    function updatePlayerSpeedometer(speed, dt, isPenalized) {
+      const response = 1.0 - Math.exp(-12.0 * dt);
+      displayedPlayerSpeed = THREE.MathUtils.lerp(displayedPlayerSpeed, speed, response);
+      if (displayedPlayerSpeed < 0.05) displayedPlayerSpeed = 0;
+      if (playerSpeedValueEl) playerSpeedValueEl.textContent = displayedPlayerSpeed.toFixed(1);
+      if (playerSpeedometerEl) playerSpeedometerEl.classList.toggle('is-penalized', isPenalized);
+    }
 
     /* =========================
        DEATH SYSTEM (DROWNING v1)
@@ -2311,6 +2409,10 @@
       const rise = (hF - hB);
       const run = (2.0 * SLOPE_SAMPLE_DIST);
       const slope = rise / Math.max(1e-5, run);
+
+      if (terrainSlopeAtWorld(fX, fZ) > PLAYER_MAX_TRAVERSABLE_SLOPE + TRAVERSABLE_SLOPE_EPSILON) {
+        return 1.0;
+      }
 
       if (slope > 0) {
         const penalty = 1.0 - (slope * SLOPE_STRENGTH_UP);
@@ -2569,9 +2671,19 @@
       const seaFloorY = SEA_LEVEL + PLAYER_EYE_HEIGHT;
 
       for (let i = 0; i < steps; i++) {
-        playerPos.x += vel.x * subDt;
+        const prevX = playerPos.x;
+        const prevZ = playerPos.z;
+
+        const intendedX = playerPos.x + vel.x * subDt;
+        const intendedZ = playerPos.z + vel.z * subDt;
+        const terrainSpeedMultiplier = grounded
+          ? playerTerrainTraversalSpeedMultiplier(prevX, prevZ, intendedX, intendedZ)
+          : 1.0;
+        if (terrainSpeedMultiplier < 1.0) playerSteepSlopePenaltyActive = true;
+
+        playerPos.x += vel.x * subDt * terrainSpeedMultiplier;
         playerPos.y += vel.y * subDt;
-        playerPos.z += vel.z * subDt;
+        playerPos.z += vel.z * subDt * terrainSpeedMultiplier;
 
         playerPos.x = THREE.MathUtils.clamp(playerPos.x, -halfW + 1, halfW - 1);
         playerPos.z = THREE.MathUtils.clamp(playerPos.z, -halfH + 1, halfH - 1);
@@ -2787,16 +2899,25 @@
 	      fill.color.setHex(MOON_LIGHT_COLOR);
 	      fill.intensity = MOON_LIGHT_INTENSITY;
 
-	      paintSkyGradient(0);
+      paintSkyGradient(0);
 
+      let measuredPlayerSpeed = 0;
+      playerSteepSlopePenaltyActive = false;
       if (deathActive) {
         deathLockoutT = Math.max(0, deathLockoutT - dt);
         updateDeath(dt);
       } else {
         if (cameraSystem.isLocked) {
+          const playerXBeforeUpdate = playerPos.x;
+          const playerZBeforeUpdate = playerPos.z;
           updatePlayer(dt);
+          measuredPlayerSpeed = Math.hypot(
+            playerPos.x - playerXBeforeUpdate,
+            playerPos.z - playerZBeforeUpdate
+          ) / Math.max(dt, 1e-5);
         }
       }
+      updatePlayerSpeedometer(measuredPlayerSpeed, dt, playerSteepSlopePenaltyActive);
 
 	      monsterSystem.update(dt);
 	      updatePlayerModelAndCamera(dt);

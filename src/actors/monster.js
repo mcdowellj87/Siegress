@@ -21,6 +21,7 @@ export function createMonsterSystem({
   getSeaLevel,
   heightAtWorld,
   isWaterAtWorld,
+  terrainTraversalSpeedMultiplier,
   getSightOccluders,
   colliderSystem
 }) {
@@ -330,9 +331,22 @@ export function createMonsterSystem({
     if (moving) {
       dir.set(tx / d, 0, tz / d);
       const speed = pursuing ? PURSUIT_SPEED : WANDER_SPEED;
-      const step = Math.min(d, speed * dt);
-      root.position.x += dir.x * step;
-      root.position.z += dir.z * step;
+      const intendedStep = Math.min(d, speed * dt);
+      const prevX = root.position.x;
+      const prevZ = root.position.z;
+      const intendedX = root.position.x + dir.x * intendedStep;
+      const intendedZ = root.position.z + dir.z * intendedStep;
+      const terrainSpeedMultiplier = terrainTraversalSpeedMultiplier(
+        prevX,
+        prevZ,
+        intendedX,
+        intendedZ
+      );
+      const step = intendedStep * terrainSpeedMultiplier;
+      const nextX = root.position.x + dir.x * step;
+      const nextZ = root.position.z + dir.z * step;
+      root.position.x = nextX;
+      root.position.z = nextZ;
       const hitTree = colliderSystem.resolveTreeCircleCollisions(root.position, bodyRadius);
       if (hitTree && !pursuing) pickTimer = Math.min(pickTimer, 0.35);
       if (resolvePlayerCollision(playerPos, getPlayerCharacterRadius())) {
