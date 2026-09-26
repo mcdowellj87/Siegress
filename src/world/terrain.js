@@ -4,6 +4,56 @@ function clamp01(v) {
   return Math.max(0, Math.min(1, v));
 }
 
+export function restoreTerrainUnderMarker(data, heights, options) {
+  const { mapW, mapH, isMarker, isTerrain, padding = 12 } = options;
+  const markerPixels = [];
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (let y = 0; y < mapH; y++) {
+    for (let x = 0; x < mapW; x++) {
+      const p = (y * mapW + x) * 4;
+      if (!isMarker(data[p], data[p + 1], data[p + 2], data[p + 3])) continue;
+      markerPixels.push({ index: y * mapW + x, x, y });
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+  }
+  if (!markerPixels.length) return false;
+
+  const samples = [];
+  const sampleMinX = Math.max(0, minX - padding);
+  const sampleMinY = Math.max(0, minY - padding);
+  const sampleMaxX = Math.min(mapW - 1, maxX + padding);
+  const sampleMaxY = Math.min(mapH - 1, maxY + padding);
+  for (let y = sampleMinY; y <= sampleMaxY; y++) {
+    for (let x = sampleMinX; x <= sampleMaxX; x++) {
+      const p = (y * mapW + x) * 4;
+      if (!isTerrain(data[p], data[p + 1], data[p + 2], data[p + 3])) continue;
+      samples.push({ x, y, height: heights[y * mapW + x] });
+    }
+  }
+  if (!samples.length) return false;
+
+  for (const marker of markerPixels) {
+    let weightedHeight = 0;
+    let totalWeight = 0;
+    for (const sample of samples) {
+      const dx = marker.x - sample.x;
+      const dy = marker.y - sample.y;
+      const weight = 1 / Math.max(1, dx * dx + dy * dy);
+      weightedHeight += sample.height * weight;
+      totalWeight += weight;
+    }
+    heights[marker.index] = weightedHeight / totalWeight;
+  }
+  return true;
+}
+
 function rampGreenBetweenBands(data, W, H, passes = 12) {
   const size = W * H;
   const g = new Float32Array(size);

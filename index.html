@@ -731,16 +731,22 @@
       makeCharacterToonPhongMaterial
     } from './src/render/materials.js';
     import { createOldRootSiteSystem } from './src/world/oldRootSite.js';
-    import { createMoundSystem } from './src/world/mound.js';
+    import { createMushroomStoreSystem } from './src/world/mound.js';
     import { calculateSeawallHeight, createSeawallSystem } from './src/world/seawall.js';
     import { createSkyAnomalySystem } from './src/world/skyAnomalies.js';
     import { createSpireSystem } from './src/world/spire.js';
     import { createWaterMonsterSystem } from './src/world/waterMonster.js';
     import { createGravelSystem } from './src/world/gravel.js';
     import {
+      createJettySystem,
+      jettyLevelForPixel,
+      restoreWorldMapUnderJetty
+    } from './src/world/jetty.js';
+    import {
       buildTerrainMesh as buildTerrainMeshObject,
       deriveTerrainData,
-      disposeTerrainMesh
+      disposeTerrainMesh,
+      restoreTerrainUnderMarker
     } from './src/world/terrain.js';
     import { createTreeSystem, FIR_TRUNK_COLLIDER_BUFFER } from './src/world/trees.js';
     import { createWaterSystem } from './src/world/water.js';
@@ -789,6 +795,7 @@
        FILES
     ========================= */
     const MAP_URL = './images/map.png';
+    const MAP_PRE_JETTY_URL = './images/map_pre_jetty.png';
     const PLAYER_WALK_GLB = './assets/player/walking.glb';
     const PLAYER_RUN_GLB = './assets/player/running.glb';
     const PLAYER_IDLE_GLB = './assets/player/idle.glb';
@@ -817,8 +824,7 @@
     const PLAYER_EYE_HEIGHT = BASE_EYE_HEIGHT * PLAYER_SCALE;
 
     const SPEED_WALK = 3.0;
-    const SPRINT_SPEED_MODIFIER = 5;
-    const SPEED_SPRINT = 16.0 * SPRINT_SPEED_MODIFIER;
+    const SPEED_SPRINT = SPEED_WALK * 3.0;
     const NOCLIP_SPEED = 42.0;
     const NOCLIP_SPRINT_SPEED = 130.0;
 
@@ -858,8 +864,8 @@
     const PLAYER_RADIUS = 0.38 * PLAYER_SCALE;
     const PLAYER_CAPSULE_H = 1.45 * PLAYER_SCALE;
     const SEAWALL_HEIGHT = calculateSeawallHeight(PLAYER_CAPSULE_H, PLAYER_RADIUS);
-    const MOUND_HEIGHT = SEAWALL_HEIGHT;
-    const FATAL_FALL_DISTANCE = BASE_EYE_HEIGHT * 5.0;
+    const MUSHROOM_STORE_HEIGHT = SEAWALL_HEIGHT * 0.5125;
+    const FATAL_FALL_DISTANCE = BASE_EYE_HEIGHT * 6.0;
     const PLAYER_CHARACTER_RADIUS_DEFAULT = 0.55;
     const MONSTER_CHARACTER_RADIUS_DEFAULT = 0.85;
     const CHARACTER_COLLIDER_BUFFER = 0.06;
@@ -908,7 +914,7 @@
       FUSION_REACTOR_SPAWN: rgb('#FF0000'),
       WATER_MONSTER_SPAWN: rgb('#ff00ff'),
       OLD_ROOT_SPAWN: rgb('#00fffd'),
-      MOUND: rgb('#ff3a8a')
+      MUSHROOM_STORE: rgb('#ff3a8a')
     };
 
     function rgb(hex) {
@@ -924,6 +930,7 @@
 
     /* Robust "yellow = water" detection */
     function isBorder(r, g, b) {
+      if (jettyLevelForPixel(r, g, b) >= 0) return false;
       return near([r, g, b], COLORS.BORDER) || (r >= 230 && g >= 230 && b <= 120);
     }
     function isSpecial(r, g, b) {
@@ -931,16 +938,19 @@
         near([r, g, b], COLORS.PLAYER) ||
         near([r, g, b], COLORS.FUSION_REACTOR_SPAWN) ||
         near([r, g, b], COLORS.WATER_MONSTER_SPAWN) ||
-        isMoundPixel(r, g, b, 255) ||
+        jettyLevelForPixel(r, g, b) >= 0 ||
+        isMushroomStorePixel(r, g, b, 255) ||
         isOldRootSpawnPixel(r, g, b, 255);
     }
     function isTreePixel(r, g, b, a) {
       if (a < 16) return false;
       return near([r, g, b], COLORS.TREE);
     }
-    function isMoundPixel(r, g, b, a) {
+    function isMushroomStorePixel(r, g, b, a) {
       if (a < 16) return false;
-      return r === COLORS.MOUND[0] && g === COLORS.MOUND[1] && b === COLORS.MOUND[2];
+      return r === COLORS.MUSHROOM_STORE[0] &&
+        g === COLORS.MUSHROOM_STORE[1] &&
+        b === COLORS.MUSHROOM_STORE[2];
     }
     function isPlayerSpawnPixel(r, g, b, a) {
       if (a < 16) return false;
@@ -1513,7 +1523,7 @@
     let mapW = 0, mapH = 0, cell = CELL_M, halfW = 0, halfH = 0;
     let heights = null;
     let waterMask = null;
-    let moundSystem = null;
+    let mushroomStoreSystem = null;
 
     let MAX_LAND_HEIGHT = 0; // tallest interpreted green (computed at load)
 
@@ -1564,9 +1574,7 @@
 
     function heightAtWorld(wx, wz) {
       if (isWaterAtWorld(wx, wz)) return SEA_LEVEL;
-      const terrainHeight = heightAtWorldRaw(wx, wz);
-      const moundHeight = moundSystem?.surfaceHeightAtWorld(wx, wz) ?? -Infinity;
-      return Math.max(terrainHeight, moundHeight);
+      return heightAtWorldRaw(wx, wz);
     }
 
     function heightForRender(wx, wz) {
@@ -1696,14 +1704,6 @@
       isWaterAtWorld
     });
 
-    moundSystem = createMoundSystem({
-      levelRoot,
-      getMetrics: () => ({ mapW, mapH, cell, halfW, halfH }),
-      heightAtWorldRaw,
-      moundHeight: MOUND_HEIGHT,
-      gradientMap: TOON_RAMP_TUNDRA
-    });
-
     addEventListener('keydown', (event) => {
       if (event.code !== 'KeyZ' || event.repeat || !cameraSystem.isLocked) return;
       if (gravelSystem.undoLastStamp()) event.preventDefault();
@@ -1767,6 +1767,21 @@
       heightAtWorld
     });
     const colliders = colliderSystem.colliders;
+
+    mushroomStoreSystem = createMushroomStoreSystem({
+      levelRoot,
+      colliders,
+      getMetrics: () => ({ mapW, mapH, cell, halfW, halfH }),
+      heightAtWorldRaw,
+      storeHeight: MUSHROOM_STORE_HEIGHT
+    });
+
+    const jettySystem = createJettySystem({
+      levelRoot,
+      colliders,
+      getMetrics: () => ({ mapW, mapH, cell, halfW, halfH, seaLevel: SEA_LEVEL }),
+      seawallHeight: SEAWALL_HEIGHT
+    });
 
     const seawallSystem = createSeawallSystem({
       levelRoot,
@@ -2415,10 +2430,6 @@
 
       // ✅ teleport to spawn
       playerPos.copy(spawnPos);
-
-      // optional: clamp to ground in case terrain moved
-      const groundY = Math.max(heightAtWorld(playerPos.x, playerPos.z), SEA_LEVEL) + PLAYER_EYE_HEIGHT;
-      playerPos.y = groundY;
       resetFallTracking();
       monsterSystem.placeNextToPlayer();
       monsterSystem.pickTarget();
@@ -2492,10 +2503,13 @@
       colliderSystem.clear();
 
       const img = new Image();
+      const preJettyImg = new Image();
       img.src = MAP_URL + '?v=' + Date.now();
-      await img.decode();
+      preJettyImg.src = MAP_PRE_JETTY_URL + '?v=' + Date.now();
+      await Promise.all([img.decode(), preJettyImg.decode()]);
 
       const bmp = await createImageBitmap(img);
+      const preJettyBmp = await createImageBitmap(preJettyImg);
       mapW = bmp.width;
       mapH = bmp.height;
       cell = CELL_M;
@@ -2512,20 +2526,35 @@
       ctx.drawImage(bmp, 0, 0);
       const data = ctx.getImageData(0, 0, mapW, mapH).data;
       const dataOriginal = new Uint8ClampedArray(data);
-      const dataForHeights = new Uint8ClampedArray(data);
+
+      const preJettyCanvas = document.createElement('canvas');
+      preJettyCanvas.width = mapW;
+      preJettyCanvas.height = mapH;
+      const preJettyContext = preJettyCanvas.getContext('2d', { willReadFrequently: true });
+      preJettyContext.drawImage(preJettyBmp, 0, 0, mapW, mapH);
+      const preJettyData = preJettyContext.getImageData(0, 0, mapW, mapH).data;
+      const dataWorld = new Uint8ClampedArray(dataOriginal);
+      restoreWorldMapUnderJetty(dataWorld, preJettyData, mapW, mapH);
+      const dataForHeights = new Uint8ClampedArray(dataWorld);
 
       // Marker/object extraction should use original pixels; height derivation mutates channels.
-      characterSpawnRegion = findMarkerRegion(dataOriginal, isPlayerSpawnPixel);
-      const spireMarker = findMarkerRegion(dataOriginal, isOldRootSpawnPixel);
+      characterSpawnRegion = findMarkerRegion(dataWorld, isPlayerSpawnPixel);
+      const spireMarker = findMarkerRegion(dataWorld, isOldRootSpawnPixel);
 
       const derived = deriveHeightsAndWater(dataForHeights);
+      restoreTerrainUnderMarker(dataWorld, derived.heights, {
+        mapW,
+        mapH,
+        isMarker: isMushroomStorePixel,
+        isTerrain: (r, g, b, a) => a >= 16 && isGreenish(r, g, b)
+      });
       heights = derived.heights;
       waterMask = derived.waterMask;
       SEA_LEVEL = derived.seaLevel;
       waterSystem.resetShorelineCache();
 
       buildTerrainMesh();
-      moundSystem.buildFromBitmap(dataOriginal);
+      mushroomStoreSystem.buildFromBitmap(dataWorld);
       gravelSystem.initialize({
         sourceCanvas: c,
         sourceContext: ctx,
@@ -2533,23 +2562,30 @@
         terrainMesh
       });
       buildWorldSeaPlane();
-      await waterMonsterSystem.build(dataOriginal);
+      await waterMonsterSystem.build(dataWorld);
 
-      const blobs = treeSystem.collectBlobsFromBitmap(dataOriginal);
+      const blobs = treeSystem.collectBlobsFromBitmap(dataWorld);
       treeSystem.buildInstancesFromBlobs(blobs);
       spireSystem.build(spireMarker);
 
-      buildBuildingPerimeterFromBitmap(dataOriginal);
+      buildBuildingPerimeterFromBitmap(dataWorld);
 
-      const bridgeBand = collectBridgeBandFromBitmap(dataOriginal);
+      const bridgeBand = collectBridgeBandFromBitmap(dataWorld);
       buildBridgePrism(bridgeBand);
-      seawallSystem.buildFromBitmap(dataOriginal);
-      await oldRootSiteSystem.build(dataOriginal);
+      seawallSystem.buildFromBitmap(dataWorld);
+      jettySystem.buildFromBitmap(dataOriginal);
+      await oldRootSiteSystem.build(dataWorld);
 
       colliderSystem.rebuildGrid();
 
-      const spawnTarget = characterSpawnRegion?.player || findNearestDrySpawn(0, 0);
-      const py = Math.max(heightAtWorld(spawnTarget.x, spawnTarget.z), SEA_LEVEL) + PLAYER_EYE_HEIGHT;
+      const mushroomSpawn = mushroomStoreSystem.state;
+      const spawnTarget = mushroomSpawn
+        ? { x: mushroomSpawn.centerX, z: mushroomSpawn.centerZ }
+        : characterSpawnRegion?.player || findNearestDrySpawn(0, 0);
+      const spawnFootY = mushroomSpawn
+        ? mushroomSpawn.floorY + mushroomSpawn.height
+        : Math.max(heightAtWorld(spawnTarget.x, spawnTarget.z), SEA_LEVEL);
+      const py = spawnFootY + PLAYER_EYE_HEIGHT;
       playerPos.set(spawnTarget.x, py, spawnTarget.z);
 
       spawnPos.copy(playerPos); // ✅ remember spawn for respawn

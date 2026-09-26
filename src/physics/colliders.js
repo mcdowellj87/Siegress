@@ -59,6 +59,12 @@ export function createColliderSystem({
             Math.max(c.a.z, c.b.z) + c.halfWidth
           )
         );
+      } else if (c.type === 'mushroom-cap') {
+        gridInsert(
+          i,
+          new THREE.Vector3(c.center.x - c.radius, c.center.y, c.center.z - c.radius),
+          new THREE.Vector3(c.center.x + c.radius, c.center.y + c.height, c.center.z + c.radius)
+        );
       } else {
         gridInsert(i, c.min, c.max);
       }
@@ -190,6 +196,28 @@ export function createColliderSystem({
           lastSupportTag = c.tag || '';
         }
 
+      } else if (c.type === 'mushroom-cap') {
+        if (pos.y > previousPlayerY + 1e-4) continue;
+
+        const dx = pos.x - c.center.x;
+        const dz = pos.z - c.center.z;
+        const radialSq = (dx * dx + dz * dz) / (c.radius * c.radius);
+        if (radialSq > 1) continue;
+
+        const surfaceY = c.center.y + c.height * Math.sqrt(Math.max(0, 1 - radialSq));
+        const footY = cap.a.y - cap.r;
+        const previousFootY = previousPlayerY - playerEyeHeight;
+        const landingTolerance = Math.max(0.5, playerRadius * 0.5);
+        if (
+          footY <= surfaceY + 0.05 &&
+          previousFootY >= surfaceY - landingTolerance &&
+          previousFootY >= c.center.y - 0.05
+        ) {
+          pos.y = surfaceY + playerEyeHeight;
+          supported = true;
+          lastSupportTag = c.tag || '';
+        }
+
       } else if (c.type === 'wall-seg') {
         if (risingFromWallTop) continue;
         const vx = c.b.x - c.a.x;
@@ -264,6 +292,27 @@ export function createColliderSystem({
         pos.z += nz * pen;
 
       } else {
+        if (c.type === 'platform') {
+          const footY = cap.a.y - cap.r;
+          const previousFootY = previousPlayerY - playerEyeHeight;
+          const topY = c.max.y;
+          const onTop =
+            pos.x >= c.min.x - 1e-4 && pos.x <= c.max.x + 1e-4 &&
+            pos.z >= c.min.z - 1e-4 && pos.z <= c.max.z + 1e-4;
+          const landingTolerance = Math.max(0.5, playerRadius);
+          const canSettleOnTop =
+            onTop &&
+            pos.y <= previousPlayerY + 1e-4 &&
+            footY <= topY + 0.05 &&
+            previousFootY >= topY - landingTolerance;
+          if (canSettleOnTop) {
+            pos.y = topY + playerEyeHeight;
+            supported = true;
+            lastSupportTag = c.tag || '';
+            continue;
+          }
+        }
+
         const pts = [cap.a, _tmp1.copy(cap.a).lerp(cap.b, 0.5), cap.b];
         let bestPen = 0;
         _nrm.set(0, 0, 0);
